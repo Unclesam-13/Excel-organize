@@ -1,0 +1,11 @@
+.venv/
+.buildenv/
+build/
+dist/
+__pycache__/
+data/
+logs/
+收件箱/
+图书馆/
+图书馆总目录*.xlsx
+config.json
