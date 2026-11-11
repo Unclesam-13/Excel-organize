@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 
 APP_NAME = "会计工作台"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 FROZEN = getattr(sys, "frozen", False)  # 是否为打包后的 exe
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".csv"}
@@ -44,9 +44,12 @@ def _documents_dir() -> Path:
 
 
 def _data_home() -> Path:
-    """程序数据（配置/数据库/日志）位置：源码运行=程序目录；exe=%LOCALAPPDATA%\\ExcelLibrary。"""
+    """程序数据（配置/数据库/日志）位置：源码运行=程序目录；
+    Windows 打包版=%LOCALAPPDATA%\\ExcelLibrary；Mac 打包版=~/Library/Application Support/ExcelLibrary。"""
     if os.environ.get("EXCEL_LIBRARY_HOME"):
         return Path(os.environ["EXCEL_LIBRARY_HOME"])
+    if FROZEN and sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "ExcelLibrary"
     if FROZEN:
         return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ExcelLibrary"
     return APP_DIR
@@ -492,7 +495,7 @@ def file_sha256(path: Path) -> str:
 
 
 def is_locked(path: Path) -> bool:
-    """Excel 正在打开该文件时(Windows)无法以写方式打开，且旁边会有 ~$ 锁文件。"""
+    """Excel 正在打开该文件时旁边会有 ~$ 锁文件（Windows/Mac 都有）；Windows 下还无法以写方式打开。"""
     if (path.parent / ("~$" + path.name[2:])).exists() or (path.parent / ("~$" + path.name)).exists():
         return True
     if not os.access(path, os.W_OK):  # 只读属性的文件，不算被占用
@@ -777,7 +780,7 @@ def _remove_file(path: Path) -> None:
         return
     try:
         import winsys
-        if winsys.send_to_recycle_bin(path):  # Windows：放进系统回收站，还能找回
+        if winsys.send_to_recycle_bin(path):  # 放进系统回收站/废纸篓，还能找回
             return
     except Exception as e:
         log.warning("放入系统回收站失败，直接删除：%s", e)

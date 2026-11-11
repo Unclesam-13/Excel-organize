@@ -54,7 +54,7 @@ BASE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{--b:#1f4e78;--bg:#f5f7fa;--line:#e3e7ee;--mut:#6b7280}
-*{box-sizing:border-box}body{margin:0;font:14px/1.6 "Microsoft YaHei UI","Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg);color:#1f2937}
+*{box-sizing:border-box}body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;background:var(--bg);color:#1f2937}
 header{background:var(--b);color:#fff;padding:0 24px;display:flex;align-items:center;gap:6px;height:52px}
 header h1{font-size:17px;margin:0 18px 0 0;white-space:nowrap}
 header nav a{color:#dbe6f2;text-decoration:none;padding:6px 12px;border-radius:6px}header nav a:hover,header nav a.on{background:rgba(255,255,255,.15);color:#fff}
@@ -100,6 +100,13 @@ code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:12px}
 <a href="{{ url_for('open_dir', which='library') }}">打开图书馆</a></nav>
 <span class="s">{{ '● DeepSeek 已连接' if ai_on else '○ 未设置 API Key' }}<br>上次自动整理 {{ status.last_scan or '—' }}</span></header>
 {% block body %}{% endblock %}
+<script>
+// Mac 上把快捷键提示换成 ⌘
+if (/Mac/i.test(navigator.platform || navigator.userAgent)) {
+  document.querySelectorAll('[placeholder]').forEach(e => e.placeholder = e.placeholder.replace(/Ctrl\+/g, '⌘'));
+  document.querySelectorAll('.hint0').forEach(e => e.innerHTML = e.innerHTML.replace(/Ctrl\+/g, '⌘'));
+}
+</script>
 </body></html>"""
 
 HOME = BASE.replace("{% block body %}{% endblock %}", r"""
@@ -544,7 +551,7 @@ TRASH = BASE.replace("{% block body %}{% endblock %}", r"""
   <div class="card" style="display:flex;align-items:center;gap:12px">
     <div style="flex:1"><b>回收站</b>：共 {{ rows|length }} 个文件。删除的文件在这里可以恢复；
       {% if keep_days %}超过 {{ keep_days }} 天会自动彻底删除。{% else %}不会自动清理。{% endif %}
-      彻底删除的文件会进入 Windows 回收站。</div>
+      彻底删除的文件会进入{{ recycle_name }}。</div>
     {% if rows %}<form method="post" action="{{ url_for('purge') }}" onsubmit="return confirm('彻底删除回收站中的全部 {{ rows|length }} 个文件？此操作无法在本软件中恢复。')">
       <input type="hidden" name="all" value="1"><button class="danger">清空回收站</button></form>{% endif %}
   </div>
@@ -601,7 +608,8 @@ def trash():
     finally:
         con.close()
     return render_template_string(TRASH, rows=rows, msg=request.args.get("msg"),
-                                  keep_days=int(cfg.get("trash_keep_days", 30) or 0), **_common("trash"))
+                                  keep_days=int(cfg.get("trash_keep_days", 30) or 0), recycle_name=winsys.RECYCLE_NAME,
+                                  **_common("trash"))
 
 
 @app.post("/restore")
@@ -627,7 +635,7 @@ def purge():
             n = core.purge_files(cfg, con, None if request.form.get("all") else _form_ids())
     finally:
         con.close()
-    return redirect(url_for("trash", msg=f"已彻底删除 {n} 个文件（已放入 Windows 回收站）。"))
+    return redirect(url_for("trash", msg=f"已彻底删除 {n} 个文件（已放入{winsys.RECYCLE_NAME}）。"))
 
 
 def _common(page: str) -> dict:
@@ -833,7 +841,7 @@ def _back(msg: str | None = None):
 @app.get("/open/<int:fid>")
 def open_file(fid):
     p = _get_path(fid)
-    if not winsys.IS_WIN:
+    if not winsys.CAN_OPEN_LOCAL:
         return send_file(p, as_attachment=True)
     winsys.open_in_explorer(p)
     return _back()
@@ -865,7 +873,7 @@ def download(fid):
 @app.get("/index-xlsx")
 def open_index():
     p = core.export_index(C())
-    if winsys.IS_WIN:
+    if winsys.CAN_OPEN_LOCAL:
         winsys.open_in_explorer(p)
         return _back()
     return send_file(p, as_attachment=True, download_name=p.name)
@@ -920,7 +928,7 @@ def render_settings(msg=None, ok=False):
     raw = core.load_raw_config()
     return render_template_string(SETTINGS, raw=raw, cats_text=_cats_to_text(raw["categories"]), msg=msg, ok=ok,
                                   autostart=winsys.get_autostart(), daily=winsys.get_daily_task(),
-                                  is_win=winsys.IS_WIN, version=core.VERSION, data_home=core.DATA_HOME,
+                                  is_win=winsys.SUPPORTED, version=core.VERSION, data_home=core.DATA_HOME,
                                   **_common("settings"))
 
 
@@ -960,7 +968,7 @@ def settings_save():
     core.save_raw_config(raw)
 
     msgs, ok = ["设置已保存"], True
-    if winsys.IS_WIN:
+    if winsys.SUPPORTED:
         try:
             if bool(fm.get("autostart")) != winsys.get_autostart():
                 winsys.set_autostart(bool(fm.get("autostart")))

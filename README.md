@@ -1,13 +1,14 @@
 # 📊 会计工作台（Excel-organize）
 
-这个 Windows 桌面软件每天自动整理新收到的 Excel，用 DeepSeek 归纳内容，然后按 **日期 / 类别** 归档，需要时可以用一句中文让 AI 找到对应的表格。
+这个 Windows / Mac 桌面软件每天自动整理新收到的 Excel，用 DeepSeek 归纳内容，然后按 **日期 / 类别** 归档，需要时可以用一句中文让 AI 找到对应的表格。
 
 ## 下载安装
 
 到 **[Releases](../../releases/latest)** 下载：
 
-- `ExcelLibrary_Setup_x.y.z.exe`：安装包，双击安装，不需要管理员权限
-- `ExcelLibrary_Portable_x.y.z.zip`：绿色版，解压后运行 `ExcelLibrary.exe`
+- `ExcelLibrary_Setup_x.y.z.exe`：Windows 安装包，双击安装，不需要管理员权限
+- `ExcelLibrary_Portable_x.y.z.zip`：Windows 绿色版，解压后运行 `ExcelLibrary.exe`
+- `ExcelLibrary_Mac_AppleSilicon_x.y.z.dmg` / `ExcelLibrary_Mac_Intel_x.y.z.dmg`：Mac 版，打开后拖进「应用程序」。第一次打开的方法见 [使用说明.md](使用说明.md)
 
 首次打开：点顶部 **设置**，填写 DeepSeek API Key，再点 **保存并测试连接**；然后点 **打开收件箱**，把 Excel 放进去。
 
@@ -26,4 +27,4 @@
 
 ## 构建
 
-每次推送到 `main`，GitHub Actions 都会自动打包、做冒烟测试，并把安装包发布到与 `core.py` 中 `VERSION` 对应的 Release（发新版时先修改 VERSION）。在本地打包的方法：Windows 上装好 Python 3.12，双击 `打包成exe.bat`。
+每次推送到 `main`，GitHub Actions 都会自动打包、做冒烟测试，并把安装包发布到与 `core.py` 中 `VERSION` 对应的 Release（发新版时先修改 VERSION）。在本地打包的方法：Windows 上装好 Python 3.12，双击 `打包成exe.bat`；Mac 上运行 `./打包Mac版.sh`。

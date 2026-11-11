@@ -42,11 +42,8 @@ def _port_free(host: str, port: int) -> bool:
 
 
 def _message_box(text: str, title: str = core.APP_NAME) -> None:
-    if os.name == "nt":
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(0, text, title, 0x40)
-    else:
-        print(text)
+    import winsys
+    winsys.message_box(text, title)
 
 
 def start_server(host: str, port: int):

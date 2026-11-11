@@ -1,0 +1,114 @@
+name: Build Windows & Mac
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+      - name: Install dependencies
+        run: pip install -r requirements-build.txt
+      - name: Build EXE + installer
+        env:
+          PYTHONUTF8: "1"
+        run: python build.py
+      - name: Smoke test packaged EXE
+        env:
+          PYTHONUTF8: "1"
+        run: python ci/smoke_test.py dist/ExcelLibrary/ExcelLibrary.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15         # Apple 芯片 (M1/M2/M3/M4)
+            arch: AppleSilicon
+          - runner: macos-15-intel   # Intel 芯片
+            arch: Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+      - name: Install dependencies
+        run: pip install -r requirements-build.txt
+      - name: Build .app + .dmg
+        env:
+          PYTHONUTF8: "1"
+        run: python build.py
+      - name: Smoke test packaged app
+        env:
+          PYTHONUTF8: "1"
+        run: python ci/smoke_test.py "dist/会计工作台.app/Contents/MacOS/ExcelLibrary"
+      - name: Check architecture
+        run: file "dist/会计工作台.app/Contents/MacOS/ExcelLibrary"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
+          path: dist/*.dmg
+
+  release:
+    needs: [windows, mac]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: ver
+        run: echo "version=$(grep -Po '^VERSION = "\K[^"]+' core.py)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: 会计工作台 v${{ steps.ver.outputs.version }}
+          make_latest: true
+          body: |
+            ## 下载
+
+            **Windows**
+            - `ExcelLibrary_Setup_*.exe`：安装包，双击安装（不需要管理员权限）
+            - `ExcelLibrary_Portable_*.zip`：绿色版，解压后运行 `ExcelLibrary.exe`
+
+            **Mac**（macOS 11 及以上）
+            - `ExcelLibrary_Mac_AppleSilicon_*.dmg`：M1 / M2 / M3 / M4 等 Apple 芯片的 Mac
+            - `ExcelLibrary_Mac_Intel_*.dmg`：Intel 芯片的 Mac
+            - 不知道是哪种芯片：点左上角  →「关于本机」，“芯片”一栏写 Apple M… 就选 AppleSilicon，写 Intel 就选 Intel
+            - 安装：打开 dmg，把「会计工作台」拖进「应用程序」。**第一次打开**时如果提示“无法验证开发者”，到「系统设置 → 隐私与安全性」底部点「仍要打开」；如果提示“已损坏”，在「终端」运行：`xattr -cr /Applications/会计工作台.app`
+
+            首次打开：顶部「设置」→ 填写 DeepSeek API Key → 保存并测试连接。详细说明见仓库里的「使用说明.md」。
+          files: dist/*

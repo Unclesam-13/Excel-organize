@@ -37,13 +37,8 @@ def open_path(path: str, select: bool = False) -> None:
     if not p.exists():
         print(f"文件不存在：{p}")
         return
-    if os.name == "nt":
-        if select:
-            subprocess.Popen(["explorer", "/select,", str(p)])
-        else:
-            os.startfile(str(p))  # type: ignore[attr-defined]
-    else:
-        subprocess.Popen(["xdg-open" if sys.platform != "darwin" else "open", str(p.parent if select else p)])
+    import winsys
+    winsys.open_in_explorer(p, select=select)
 
 
 def print_rows(rows: list[dict], with_reason: bool = False) -> None:
