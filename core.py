@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 
 APP_NAME = "会计工作台"
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 FROZEN = getattr(sys, "frozen", False)  # 是否为打包后的 exe
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".csv"}
@@ -90,6 +90,7 @@ def default_config() -> dict:
         "chat_full_data_chars": 40000,
         "chat_preview_rows": 30,
         "trash_keep_days": 30,
+        "vision_model": "",
     }
 
 
@@ -249,6 +250,13 @@ def read_tables(path: Path) -> dict[str, pd.DataFrame]:
             except UnicodeDecodeError as e:
                 last_err = e
         raise last_err  # type: ignore[misc]
+    if path.suffix.lower() in (".xlsx", ".xlsm"):
+        import formula_eval
+        if formula_eval.needs_eval(path):  # 被程序写入过、公式没有计算结果的文件
+            try:
+                return formula_eval.read_with_formulas(path)
+            except Exception as e:
+                log.warning("公式计算失败，按原值读取：%s", e)
     return pd.read_excel(path, sheet_name=None, header=None, dtype=str, keep_default_na=False)
 
 
@@ -385,9 +393,11 @@ class DeepSeek:
         }, retries, parse)
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, max_tokens: int = 4000,
-             retries: int = 2, tool_choice: str | None = None) -> dict:
+             retries: int = 2, tool_choice: str | None = None, model: str | None = None) -> dict:
         """普通多轮对话，可带函数调用工具；返回 assistant message（可能含 tool_calls）。"""
         payload = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.3}
+        if model:
+            payload["model"] = model
         if tools:
             payload["tools"] = tools
             if tool_choice:
@@ -695,6 +705,27 @@ def reanalyze(cfg: dict, con: sqlite3.Connection, ai: DeepSeek, file_id: int) ->
                      json.dumps(meta["key_fields"], ensure_ascii=False), data_date, str(new_path), int(ai_used), file_id))
     log.info("已重新归档 #%s [%s] %s", file_id, meta["category"], meta["title"])
     return {"id": file_id, **meta, "data_date": data_date}
+
+
+def refresh_file(cfg: dict, con: sqlite3.Connection, file_id: int) -> None:
+    """文件内容被修改（如写入新行）后，更新行数、结构、全文内容和哈希，保留标题/摘要等档案信息。"""
+    row = con.execute("SELECT * FROM files WHERE id=?", (file_id,)).fetchone()
+    if not row:
+        return
+    path = Path(row["stored_path"])
+    prof = profile_workbook(path, cfg.get("preview_rows", 15), cfg.get("max_content_chars", 200_000))
+    digest = file_sha256(path)
+    with con:
+        try:
+            con.execute("UPDATE files SET file_hash=? WHERE id=?", (digest, file_id))
+        except sqlite3.IntegrityError:
+            pass  # 与其他文件内容完全相同，保留原哈希
+        con.execute("UPDATE files SET total_rows=?, sheets=?, date_min=?, date_max=? WHERE id=?",
+                    (prof["total_rows"], json.dumps(prof["sheets"], ensure_ascii=False),
+                     prof["date_min"], prof["date_max"], file_id))
+        con.execute("DELETE FROM contents WHERE file_id=?", (file_id,))
+        con.executemany("INSERT INTO contents(file_id, sheet, text) VALUES(?,?,?)",
+                        [(file_id, s_, t) for s_, t in prof["contents"]])
 
 
 # ----------------------------------------------------------------------------- 删除 / 回收站

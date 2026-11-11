@@ -65,6 +65,18 @@ try:
     resp = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))
     assert "API Key" in resp.get("error", ""), f"未设置 Key 时应提示：{resp}"
     post = lambda path, body=b"": urllib.request.urlopen(urllib.request.Request(base + path, data=body, method="POST"), timeout=20)
+    # 写入行 -> 档案行数更新 -> 撤销
+    def post_json(path, obj):
+        req = urllib.request.Request(base + path, data=json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        return json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8"))
+    w = post_json("/api/write_rows", {"file_id": 1, "rows": [{"供应商": "宁波海通", "物料": "垫片", "报价": "1.2"}]})
+    print("写入结果:", w)
+    assert w.get("ok") and w["written"] == 1, w
+    db = sqlite3.connect(home / "data" / "library.db")
+    assert db.execute("SELECT total_rows FROM files WHERE id=1").fetchone()[0] == 3, "写入后应为 3 行"
+    assert post_json("/api/undo_write", {"file_id": 1, "backup": w["backup"]}).get("ok")
+    assert db.execute("SELECT total_rows FROM files WHERE id=1").fetchone()[0] == 2, "撤销后应恢复为 2 行"
     post("/delete", b"ids=1")
     assert "回收站 (1)" in urllib.request.urlopen(base + "/trash", timeout=10).read().decode("utf-8"), "删除后应在回收站"
     assert not Path(rows[0][2]).exists(), "删除后文件应移出原位置"

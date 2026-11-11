@@ -14,6 +14,7 @@ from flask import Flask, abort, redirect, render_template_string, request, send_
 
 import chat as chat_mod
 import core
+import excel_writer
 import winsys
 
 core.setup_logging(core.load_config())
@@ -92,7 +93,7 @@ code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:12px}
 </style></head><body>
 <header><h1>📊 会计工作台</h1>
 <nav><a href="{{ url_for('index') }}" class="{{ 'on' if page=='home' }}">文件库</a>
-<a href="{{ url_for('chat_page') }}" class="{{ 'on' if page=='chat' }}">AI 问表格</a>
+<a href="{{ url_for('chat_page') }}" class="{{ 'on' if page=='chat' }}">AI 助手</a>
 <a href="{{ url_for('trash') }}" class="{{ 'on' if page=='trash' }}">回收站{% if trash_n %} ({{ trash_n }}){% endif %}</a>
 <a href="{{ url_for('settings') }}" class="{{ 'on' if page=='settings' }}">设置</a>
 <a href="{{ url_for('open_dir', which='inbox') }}">打开收件箱</a>
@@ -227,6 +228,8 @@ SETTINGS = BASE.replace("{% block body %}{% endblock %}", r"""
     <div class="row"><span></span><span class="hint">在 platform.deepseek.com 获取。不填也能用（按关键词规则归档）。</span></div>
     <div class="row"><label>模型</label><input type="text" name="model" value="{{ raw.deepseek.model }}"></div>
     <div class="row"><span></span><span class="hint">默认 deepseek-flash；需要更强理解可填 deepseek-v4-pro</span></div>
+    <div class="row"><label>识图模型</label><input type="text" name="vision_model" value="{{ raw.vision_model }}" placeholder="留空 = 使用上面的模型"></div>
+    <div class="row"><span></span><span class="hint">识别图片用的模型。deepseek-flash 支持图片；如果上面改成了不支持图片的模型，这里填 deepseek-flash。</span></div>
     <div class="row"><label>接口地址</label><input type="text" name="base_url" value="{{ raw.deepseek.base_url }}"></div>
     <div class="row"><span></span><span><button name="action" value="test" class="ghost">保存并测试连接</button></span></div>
   </div>
@@ -275,21 +278,39 @@ CHAT = BASE.replace("{% block body %}{% endblock %}", r"""
 .fi{border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px}
 .fi b{display:block}.fi .m{color:var(--mut);font-size:12px}.fi .x{float:right;color:#9ca3af;text-decoration:none;font-size:15px;line-height:1}
 .fi .x:hover{color:#b42318}
-.conv{flex:1;display:flex;flex-direction:column;min-width:0;background:#fff;border:1px solid var(--line);border-radius:8px}
+.conv{flex:1;display:flex;flex-direction:column;min-width:0;background:#fff;border:1px solid var(--line);border-radius:8px;position:relative}
 #msgs{flex:1;overflow:auto;padding:16px 18px}
 .m-u{margin:10px 0 10px auto;max-width:75%;background:#e8f0f8;border-radius:10px 10px 2px 10px;padding:8px 12px;white-space:pre-wrap;width:fit-content}
-.m-a{margin:10px 0;max-width:92%;background:#f8fafc;border:1px solid var(--line);border-radius:10px 10px 10px 2px;padding:10px 14px}
+.m-u img{max-height:120px;max-width:180px;border-radius:6px;margin:4px 4px 0 0;border:1px solid #c9d3df;vertical-align:top}
+.m-a{margin:10px 0;max-width:94%;background:#f8fafc;border:1px solid var(--line);border-radius:10px 10px 10px 2px;padding:10px 14px}
 .m-a p{margin:4px 0}.m-a table.md{border-collapse:collapse;margin:8px 0;font-size:13px;width:auto}
 .m-a table.md th,.m-a table.md td{border:1px solid #d5dce5;padding:4px 8px}.m-a table.md th{background:#eef2f7}
 .m-a pre{background:#f0f3f7;padding:8px;border-radius:6px;overflow:auto;font-size:12px}
 .m-a h4{margin:8px 0 4px}
 .steps{font-size:12px;color:var(--mut);margin-top:6px}.steps summary{cursor:pointer}
 .err{color:#b42318}
-.inp{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+.prop{border:1px solid #9ec5e8;background:#f3f8fd;border-radius:8px;padding:10px 12px;margin:10px 0}
+.prop .t{font-weight:600;color:var(--b)}.prop .r{color:var(--mut);font-size:12px;margin:2px 0 6px}
+.prop .wrap{overflow:auto;max-height:340px}
+.prop table{border-collapse:collapse;font-size:13px;background:#fff}
+.prop th,.prop td{border:1px solid #c9d3df;padding:4px 8px;white-space:nowrap;min-width:60px}
+.prop th{background:#e8f0f8;position:sticky;top:0}
+.prop td[contenteditable]:focus{outline:2px solid #4a90d9;background:#fffbe6}
+.prop td.empty{background:#fafafa}
+.prop .acts{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.prop .ok{color:#15803d}
+.inp{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);align-items:flex-end}
 .inp textarea{flex:1;resize:none;height:62px;font-size:14px}
-.sugg{padding:0 12px 10px;display:flex;gap:6px;flex-wrap:wrap}
+.attach{background:#fff;color:var(--b);border:1px solid #c9d3df;font-size:18px;padding:6px 10px;height:40px}
+#thumbs{display:flex;gap:8px;flex-wrap:wrap;padding:0 12px}
+#thumbs:not(:empty){padding-top:10px}
+.th{position:relative}.th img{height:64px;max-width:110px;border-radius:6px;border:1px solid #c9d3df;object-fit:cover}
+.th a{position:absolute;top:-6px;right:-6px;background:#b42318;color:#fff;border-radius:50%;width:18px;height:18px;text-align:center;line-height:17px;font-size:12px;text-decoration:none}
+.sugg{padding:8px 12px 0;display:flex;gap:6px;flex-wrap:wrap}
 .sugg button{background:#f0f3f7;color:#374151;border:1px solid var(--line);font-size:12px;padding:4px 10px;border-radius:14px}
-.hint0{color:var(--mut);text-align:center;margin-top:60px}
+.hint0{color:var(--mut);text-align:center;margin-top:50px;line-height:1.9}
+.drop{display:none;position:absolute;inset:0;background:rgba(31,78,120,.08);border:3px dashed #4a90d9;border-radius:8px;z-index:5;align-items:center;justify-content:center;font-size:18px;color:var(--b)}
+.conv.dragging .drop{display:flex}
 .dots:after{content:'…';animation:d 1s steps(3) infinite}@keyframes d{0%{content:'.'}50%{content:'..'}100%{content:'...'}}
 </style>
 <div class="chat">
@@ -303,35 +324,41 @@ CHAT = BASE.replace("{% block body %}{% endblock %}", r"""
       <div style="margin-top:4px"><a class="btn ghost" href="{{ url_for('open_file', fid=f.id) }}">打开</a></div>
     </div>
     {% else %}
-    <div class="m" style="color:var(--mut)">还没有选择文件。请回到 <a href="{{ url_for('index') }}">文件库</a> 勾选要提问的 Excel（最多 10 个）。</div>
+    <div class="m" style="color:var(--mut);font-size:13px;line-height:1.8">没有选中文件也可以使用：<br>· 发图片让 AI 识别，它会在资料库里找合适的表格登记<br>· 直接问资料库里的数据<br><br>想针对某几个表格提问，请到 <a href="{{ url_for('index') }}">文件库</a> 勾选（最多 10 个）。</div>
     {% endfor %}
     {% if files %}<a class="btn ghost" href="{{ url_for('index') }}">＋ 回文件库添加更多</a>{% endif %}
   </div>
-  <div class="conv">
+  <div class="conv" id="conv">
+    <div class="drop">松开鼠标，添加图片</div>
     <div id="msgs">
       {% if not ai_on %}<div class="hint0 err">还没有设置 DeepSeek API Key，请先到 <a href="{{ url_for('settings') }}">设置</a> 里填写。</div>
-      {% elif files %}<div class="hint0" id="hello">可以直接问这些表格里的内容，例如汇总、对比、查找某条记录、找异常。<br>AI 会调用本地查询工具精确计算，不会心算。</div>{% endif %}
+      {% else %}<div class="hint0" id="hello">可以直接问表格里的内容，比如汇总、对比、查找某条记录、找异常。<br>
+        📷 也可以 <b>粘贴截图 / 拖入图片 / 点 📎 选择图片</b>（发票、收据、回单、报销单、表格截图等），<br>AI 会识别内容，整理好放到对应的表格里，你确认后才会写入。</div>{% endif %}
     </div>
-    {% if files %}
     <div class="sugg">
-      <button onclick="ask(this.textContent)">概括这几个表格的主要内容</button>
+      {% if files %}<button onclick="ask(this.textContent)">概括这几个表格的主要内容</button>
       <button onclick="ask(this.textContent)">各文件的关键数字分别是多少？做个对比表</button>
-      <button onclick="ask(this.textContent)">有没有异常或需要注意的数据？</button>
+      <button onclick="ask(this.textContent)">有没有异常或需要注意的数据？</button>{% endif %}
+      <button onclick="document.getElementById('pick').click()">📷 识别图片并登记到表格</button>
       <button onclick="newChat()" title="清空对话">🗑 新对话</button>
     </div>
+    <div id="thumbs"></div>
     <div class="inp">
-      <textarea id="q" placeholder="输入问题，Enter 发送，Shift+Enter 换行" {{ 'disabled' if not ai_on }}></textarea>
+      <input type="file" id="pick" accept="image/*" multiple style="display:none">
+      <button class="attach" title="添加图片（也可直接粘贴截图或拖入）" onclick="document.getElementById('pick').click()" {{ 'disabled' if not ai_on }}>📎</button>
+      <textarea id="q" placeholder="输入问题，Enter 发送，Shift+Enter 换行；可 Ctrl+V 粘贴截图" {{ 'disabled' if not ai_on }}></textarea>
       <button id="send" onclick="ask()" {{ 'disabled' if not ai_on }}>发送</button>
     </div>
-    {% endif %}
   </div>
 </div>
 <script>
 const IDS = {{ ids|tojson }};
 const KEY = 'excellib.picked';
+const MAX_IMG = 10;
 let history = [];
 let busy = false;
-if (!IDS.length) {
+let pending = [];   // 待发送图片（data URL）
+if (!IDS.length && !sessionStorage.getItem('excellib.nofiles')) {
   try {
     const p = JSON.parse(localStorage.getItem(KEY) || '{}');
     if (Object.keys(p).length) location.replace('?ids=' + Object.keys(p).join(','));
@@ -371,22 +398,129 @@ function add(cls, html) {
   const d = document.createElement('div'); d.className = cls; d.innerHTML = html;
   const box = document.getElementById('msgs'); box.appendChild(d); box.scrollTop = box.scrollHeight; return d;
 }
+
+// ---------- 图片：选择 / 粘贴 / 拖入，发送前在本机压缩 ----------
+function shrink(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 2200; let w = img.width, h = img.height;
+        const k = Math.min(1, MAX / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k);
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL('image/jpeg', 0.9));
+      };
+      img.onerror = () => reject('无法读取图片：' + file.name);
+      img.src = fr.result;
+    };
+    fr.onerror = () => reject('无法读取图片：' + file.name);
+    fr.readAsDataURL(file);
+  });
+}
+async function addImages(list) {
+  for (const f of list) {
+    if (!f.type || !f.type.startsWith('image/')) continue;
+    if (pending.length >= MAX_IMG) { alert('一次最多 ' + MAX_IMG + ' 张图片'); break; }
+    try { pending.push(await shrink(f)); } catch (e) { alert(e); }
+  }
+  drawThumbs();
+}
+function drawThumbs() {
+  document.getElementById('thumbs').innerHTML = pending.map((u, i) =>
+    '<div class="th"><img src="' + u + '"><a href="#" onclick="pending.splice(' + i + ',1);drawThumbs();return false">×</a></div>').join('');
+}
+document.getElementById('pick').addEventListener('change', e => { addImages([...e.target.files]); e.target.value = ''; });
+document.addEventListener('paste', e => {
+  const imgs = [...(e.clipboardData || {}).items || []].filter(it => it.type.startsWith('image/')).map(it => it.getAsFile());
+  if (imgs.length) { e.preventDefault(); addImages(imgs); }
+});
+const conv = document.getElementById('conv');
+['dragenter', 'dragover'].forEach(ev => conv.addEventListener(ev, e => { e.preventDefault(); conv.classList.add('dragging'); }));
+['dragleave', 'drop'].forEach(ev => conv.addEventListener(ev, e => { e.preventDefault(); if (ev === 'drop' || e.target === conv.querySelector('.drop')) conv.classList.remove('dragging'); }));
+conv.addEventListener('drop', e => addImages([...e.dataTransfer.files]));
+
+// ---------- 写入预览卡片 ----------
+const PROPS = {};
+function propCard(p) {
+  PROPS[p.id] = p;
+  const target = p.file_id ? ('文件#' + p.file_id + ' ' + esc(p.file_title) + ' 「' + esc(p.sheet) + '」末尾')
+                           : ('新建表格「' + esc(p.new_file_name) + '」（会自动整理进文件库）');
+  const head = '<tr><th>#</th>' + p.columns.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>';
+  const body = p.rows.map((r, i) => '<tr><td style="color:#9ca3af">' + (i + 1) + '</td>' + p.columns.map(c => {
+    const v = r[c] === undefined || r[c] === null ? '' : r[c];
+    return '<td contenteditable="true"' + (v === '' ? ' class="empty"' : '') + '>' + esc(v) + '</td>';
+  }).join('') + '</tr>').join('');
+  return '<div class="prop" id="p_' + p.id + '"><div class="t">📥 写入预览：' + target + '，' + p.rows.length + ' 行</div>' +
+    (p.reason ? '<div class="r">' + esc(p.reason) + '</div>' : '') +
+    '<div class="r">请核对，单元格可以直接点击修改；空白的单元格不写入，带公式的列（如价税合计）会沿用上一行的公式自动计算。写入前会自动备份，可撤销。</div>' +
+    '<div class="wrap"><table>' + head + body + '</table></div>' +
+    '<div class="acts"><button onclick="writeProp(\'' + p.id + '\')">✅ 写入 Excel</button>' +
+    '<button class="ghost" onclick="dropProp(\'' + p.id + '\')">忽略</button><span class="st"></span></div></div>';
+}
+function readTable(id) {
+  const p = PROPS[id]; const rows = [];
+  document.querySelectorAll('#p_' + id + ' table tr').forEach((tr, i) => {
+    if (i === 0) return;
+    const tds = [...tr.querySelectorAll('td')].slice(1); const r = {};
+    tds.forEach((td, j) => { const v = td.innerText.trim(); if (v !== '') r[p.columns[j]] = v; });
+    if (Object.keys(r).length) rows.push(r);
+  });
+  return rows;
+}
+async function writeProp(id) {
+  const p = PROPS[id]; const card = document.getElementById('p_' + id); const st = card.querySelector('.st');
+  const rows = readTable(id);
+  if (!rows.length) { st.innerHTML = '<span class="err">没有要写入的数据</span>'; return; }
+  card.querySelectorAll('.acts button').forEach(b => b.disabled = true); st.innerHTML = '<span class="dots">正在写入</span>';
+  try {
+    const r = await fetch('{{ url_for("api_write_rows") }}', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file_id: p.file_id, sheet: p.sheet, columns: p.columns, rows: rows, new_file_name: p.new_file_name})});
+    const d = await r.json();
+    if (d.error) { st.innerHTML = '<span class="err">' + esc(d.error) + '</span>'; card.querySelectorAll('.acts button').forEach(b => b.disabled = false); return; }
+    card.querySelectorAll('td[contenteditable]').forEach(td => td.removeAttribute('contenteditable'));
+    card.querySelector('.acts').innerHTML = '<span class="ok">✅ 已写入 ' + d.written + ' 行到「' + esc(d.title) + '」' +
+      (d.first_row ? '（从第 ' + d.first_row + ' 行开始' + (d.before_total ? '，在合计行之前' : '') + '）' : '') + '</span>' +
+      (d.file_id ? '<a class="btn ghost" href="/open/' + d.file_id + '">打开文件</a>' : '<span class="r">新表已放入收件箱，稍后自动整理</span>') +
+      '<button class="ghost" onclick="undoWrite(\'' + id + '\')">撤销</button>';
+    WRITES[id] = d;
+    history.push({role: 'assistant', content: '（系统提示：用户已确认，' + rows.length + ' 行数据已写入「' + d.title + '」。）'});
+  } catch (e) { st.innerHTML = '<span class="err">请求失败：' + esc(e) + '</span>'; card.querySelectorAll('.acts button').forEach(b => b.disabled = false); }
+}
+const WRITES = {};
+async function undoWrite(id) {
+  const d = WRITES[id];
+  if (!confirm('撤销这次写入？' + (d.created ? '新建的表格会移到回收站。' : '文件会恢复到写入前的状态。'))) return;
+  const card = document.getElementById('p_' + id);
+  const r = await fetch('{{ url_for("api_undo_write") }}', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({file_id: d.file_id, backup: d.backup, created: !!d.created})});
+  const res = await r.json();
+  card.querySelector('.acts').innerHTML = res.error ? '<span class="err">' + esc(res.error) + '</span>' : '<span class="r">↩ 已撤销这次写入</span>';
+  if (!res.error) history.push({role: 'assistant', content: '（系统提示：用户撤销了刚才写入「' + d.title + '」的数据。）'});
+}
+function dropProp(id) { document.getElementById('p_' + id).querySelector('.acts').innerHTML = '<span class="r">已忽略</span>'; }
+
+// ---------- 发送 ----------
 async function ask(text) {
   const q = (text || document.getElementById('q').value).trim();
-  if (!q || busy) return;
+  const imgs = pending.slice();
+  if ((!q && !imgs.length) || busy) return;
   busy = true; document.getElementById('send').disabled = true; document.getElementById('q').value = '';
-  add('m-u', esc(q));
-  const a = add('m-a', '<span class="dots">正在读取表格并分析</span>');
+  pending = []; drawThumbs();
+  add('m-u', esc(q || '（识别图片）') + (imgs.length ? '<div>' + imgs.map(u => '<img src="' + u + '">').join('') + '</div>' : ''));
+  const a = add('m-a', '<span class="dots">' + (imgs.length ? '正在识别图片' : '正在读取表格并分析') + '</span>');
   try {
     const r = await fetch('{{ url_for("api_chat") }}', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ids: IDS, question: q, history: history})});
+      body: JSON.stringify({ids: IDS, question: q, history: history, images: imgs})});
     const d = await r.json();
     if (d.error) { a.innerHTML = '<span class="err">出错了：' + esc(d.error) + '</span>'; }
     else {
       let html = md(d.answer);
-      if (d.steps && d.steps.length) html += '<details class="steps"><summary>🔍 查询了 ' + d.steps.length + ' 次数据</summary>' + d.steps.map(s => '<div>· ' + esc(s) + '</div>').join('') + '</details>';
+      (d.proposals || []).forEach(p => html += propCard(p));
+      if (d.steps && d.steps.length) html += '<details class="steps"><summary>🔍 处理了 ' + d.steps.length + ' 步</summary>' + d.steps.map(s => '<div>· ' + esc(s) + '</div>').join('') + '</details>';
       a.innerHTML = html;
-      history.push({role: 'user', content: q}, {role: 'assistant', content: d.answer});
+      history.push({role: 'user', content: d.user_content || q}, {role: 'assistant', content: d.answer});
     }
   } catch (e) { a.innerHTML = '<span class="err">请求失败：' + esc(e) + '</span>'; }
   busy = false; document.getElementById('send').disabled = false; document.getElementById('q').focus();
@@ -395,7 +529,9 @@ async function ask(text) {
 function newChat() { history = []; document.getElementById('msgs').innerHTML = ''; }
 function removeFile(id) {
   try { const p = JSON.parse(localStorage.getItem(KEY) || '{}'); delete p[id]; localStorage.setItem(KEY, JSON.stringify(p)); } catch (e) {}
-  const rest = IDS.filter(x => x !== id); location.href = '?ids=' + rest.join(',');
+  const rest = IDS.filter(x => x !== id);
+  if (!rest.length) try { sessionStorage.setItem('excellib.nofiles', '1'); } catch (e) {}
+  location.href = '?ids=' + rest.join(',');
 }
 const ta = document.getElementById('q');
 if (ta) ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(); } });
@@ -556,18 +692,88 @@ def chat_page():
 def api_chat():
     data = request.get_json(silent=True) or {}
     question = str(data.get("question", "")).strip()
-    if not question:
+    if not question and not data.get("images"):
         return {"error": "问题不能为空"}
     cfg = C()
     con = core.connect(cfg)
     try:
         return chat_mod.ask(con, cfg, core.DeepSeek(cfg), _parse_ids(data.get("ids")), question,
-                            history=data.get("history") or [])
+                            history=data.get("history") or [], images=data.get("images") or [])
     except (RuntimeError, FileNotFoundError) as e:
         core.log.warning("AI 问答：%s", e)
         return {"error": str(e)}
     except Exception as e:
         core.log.exception("AI 问答出错")
+        return {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        con.close()
+
+
+@app.post("/api/write_rows")
+def api_write_rows():
+    d = request.get_json(silent=True) or {}
+    rows = [{str(k): v for k, v in r.items() if v not in (None, "")} for r in (d.get("rows") or []) if isinstance(r, dict)]
+    rows = [r for r in rows if r]
+    if not rows:
+        return {"error": "没有要写入的数据"}
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        with _scan_lock:
+            if d.get("file_id"):
+                fid = int(d["file_id"])
+                row = con.execute("SELECT stored_path, title FROM files WHERE id=? AND deleted_at IS NULL", (fid,)).fetchone()
+                if not row:
+                    return {"error": "目标文件不存在或已被删除"}
+                res = excel_writer.append_rows(cfg, Path(row["stored_path"]), rows, d.get("sheet"))
+                core.refresh_file(cfg, con, fid)
+                core.export_index(cfg, con)
+                return {"ok": True, "file_id": fid, "title": row["title"], **res}
+            name = core._sanitize_name(d.get("new_file_name") or "AI新建表格", 80)
+            if not name.lower().endswith(".xlsx"):
+                name += ".xlsx"
+            cfg["inbox_dir"].mkdir(parents=True, exist_ok=True)
+            path = core._unique_path(cfg["inbox_dir"] / name)
+            res = excel_writer.create_workbook(path, d.get("columns") or list(dict.fromkeys(k for r in rows for k in r)), rows)
+            old = time.time() - 60
+            os.utime(path, (old, old))
+            scan = core.scan_inbox(cfg)
+            item = next((i for i in scan.get("items", []) if i.get("name") == path.name and i.get("status") == "ok"), None)
+            return {"ok": True, "created": True, "file_id": item["id"] if item else None, "title": path.name,
+                    "written": res["written"], "first_row": None, "before_total": False}
+    except excel_writer.WriteError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        core.log.exception("写入 Excel 出错")
+        return {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        con.close()
+
+
+@app.post("/api/undo_write")
+def api_undo_write():
+    d = request.get_json(silent=True) or {}
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        with _scan_lock:
+            fid = int(d.get("file_id") or 0)
+            if d.get("created"):
+                if fid:
+                    core.trash_files(cfg, con, [fid])
+                return {"ok": True}
+            row = con.execute("SELECT stored_path FROM files WHERE id=?", (fid,)).fetchone()
+            if not row:
+                return {"error": "文件不存在"}
+            excel_writer.restore_backup(cfg, str(d.get("backup") or ""), Path(row["stored_path"]))
+            core.refresh_file(cfg, con, fid)
+            core.export_index(cfg, con)
+            core.log.info("已撤销写入 #%s（恢复备份 %s）", fid, d.get("backup"))
+            return {"ok": True}
+    except excel_writer.WriteError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        core.log.exception("撤销写入出错")
         return {"error": f"{type(e).__name__}: {e}"}
     finally:
         con.close()
@@ -730,6 +936,7 @@ def settings_save():
     raw["deepseek"]["api_key"] = fm.get("api_key", "").strip()
     raw["deepseek"]["model"] = fm.get("model", "").strip() or "deepseek-flash"
     raw["deepseek"]["base_url"] = fm.get("base_url", "").strip() or "https://api.deepseek.com"
+    raw["vision_model"] = fm.get("vision_model", "").strip()
     for k in ("inbox_dir", "library_dir", "index_xlsx"):
         if fm.get(k, "").strip():
             raw[k] = fm[k].strip()
