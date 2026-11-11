@@ -66,6 +66,7 @@ main{flex:1;min-width:0}
 .card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px}
 .ask{display:flex;gap:8px}.ask input{flex:1;font-size:15px;padding:10px 12px;border:1px solid #c9d3df;border-radius:6px}
 button,.btn{background:var(--b);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px;text-decoration:none;display:inline-block;font-family:inherit}
+button.ghost.del{color:#b42318;border-color:#f1c4c0}button.ghost.del:hover{background:#fef3f2}
 .btn.ghost,button.ghost{background:#fff;color:var(--b);border:1px solid #c9d3df;padding:3px 9px;font-size:12px}
 button.danger{background:#b42318}
 form.flt{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
@@ -92,6 +93,7 @@ code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:12px}
 <header><h1>📚 Excel 图书馆</h1>
 <nav><a href="{{ url_for('index') }}" class="{{ 'on' if page=='home' }}">文件库</a>
 <a href="{{ url_for('chat_page') }}" class="{{ 'on' if page=='chat' }}">AI 问表格</a>
+<a href="{{ url_for('trash') }}" class="{{ 'on' if page=='trash' }}">回收站{% if trash_n %} ({{ trash_n }}){% endif %}</a>
 <a href="{{ url_for('settings') }}" class="{{ 'on' if page=='settings' }}">设置</a>
 <a href="{{ url_for('open_dir', which='inbox') }}">打开收件箱</a>
 <a href="{{ url_for('open_dir', which='library') }}">打开图书馆</a></nav>
@@ -145,6 +147,8 @@ HOME = BASE.replace("{% block body %}{% endblock %}", r"""
         <a class="btn ghost" href="{{ url_for('open_file', fid=r.id) }}">打开</a>
         <a class="btn ghost" href="{{ url_for('open_folder', fid=r.id) }}">文件夹</a>
         <a class="btn ghost" href="{{ url_for('download', fid=r.id) }}">下载</a>
+        <form method="post" action="{{ url_for('delete_files') }}" style="display:inline" data-title="{{ r.title }}" onsubmit="return confirmDel(1, this.dataset.title)">
+          <input type="hidden" name="ids" value="{{ r.id }}"><button class="ghost del" title="移到回收站">删除</button></form>
       </td>
     </tr>
     {% else %}<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:30px">没有找到文件</td></tr>{% endfor %}
@@ -164,8 +168,10 @@ HOME = BASE.replace("{% block body %}{% endblock %}", r"""
 <div id="pickbar" class="pickbar" style="display:none">
   <span>已选 <b id="pickN">0</b> 个文件：<span id="pickNames" class="names"></span></span>
   <button onclick="goChat()">💬 向 AI 提问选中文件的内容</button>
+  <button class="ghost del" onclick="deletePicked()">🗑 删除选中</button>
   <button class="ghost" onclick="clearPicks()">清空</button>
 </div>
+<form id="delForm" method="post" action="{{ url_for('delete_files') }}" style="display:none"><input type="hidden" name="ids" id="delIds"></form>
 <script>
 const KEY = 'excellib.picked';
 let picked = {};
@@ -195,6 +201,19 @@ document.getElementById('pickAll').addEventListener('change', e => {
   save();
 });
 function clearPicks() { picked = {}; save(); }
+function confirmDel(n, title) {
+  const ok = confirm((title ? '删除「' + title + '」？' : '删除选中的 ' + n + ' 个文件？') + '\n\n文件会移到“回收站”，可以随时恢复。');
+  return ok;
+}
+function deletePicked() {
+  const ids = Object.keys(picked); if (!ids.length) return;
+  if (!confirmDel(ids.length)) return;
+  document.getElementById('delIds').value = ids.join(',');
+  picked = {}; save();
+  document.getElementById('delForm').submit();
+}
+// 已被删除的文件不再保留在“已选”中
+{% if deleted_ids %}{% for i in deleted_ids %}delete picked['{{ i }}'];{% endfor %}save();{% endif %}
 function goChat() { location.href = '{{ url_for("chat_page") }}?ids=' + Object.keys(picked).join(','); }
 render();
 </script>""")
@@ -229,6 +248,8 @@ SETTINGS = BASE.replace("{% block body %}{% endblock %}", r"""
   <div class="card"><h2>自动运行</h2>
     <div class="row"><label></label><label><input type="checkbox" name="web_auto_scan" {{ 'checked' if raw.web_auto_scan }}> 程序运行时自动整理收件箱，每
       <input type="number" name="scan_interval_seconds" value="{{ raw.scan_interval_seconds }}" min="10" style="width:80px"> 秒检查一次</label></div>
+    <div class="row"><label>回收站</label><label>删除的文件保留
+      <input type="number" name="trash_keep_days" value="{{ raw.trash_keep_days }}" min="0" style="width:70px"> 天后自动彻底删除（0 = 永不自动删除）</label></div>
     <div class="row"><label></label><label><input type="checkbox" name="autostart" {{ 'checked' if autostart }} {{ 'disabled' if not is_win }}> 开机后在后台自动运行（不弹窗口）</label></div>
     <div class="row"><label></label><label><input type="checkbox" name="daily" {{ 'checked' if daily }} {{ 'disabled' if not is_win }}> 每天定时整理一次（即使程序没打开），时间
       <input type="time" name="daily_at" value="{{ daily if daily and ':' in daily else '08:00' }}" {{ 'disabled' if not is_win }}></label></div>
@@ -381,9 +402,106 @@ if (ta) ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftK
 </script>""")
 
 
+TRASH = BASE.replace("{% block body %}{% endblock %}", r"""
+<div class="set" style="max-width:1100px">
+  {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
+  <div class="card" style="display:flex;align-items:center;gap:12px">
+    <div style="flex:1"><b>回收站</b>：共 {{ rows|length }} 个文件。删除的文件在这里可以恢复；
+      {% if keep_days %}超过 {{ keep_days }} 天会自动彻底删除。{% else %}不会自动清理。{% endif %}
+      彻底删除的文件会进入 Windows 回收站。</div>
+    {% if rows %}<form method="post" action="{{ url_for('purge') }}" onsubmit="return confirm('彻底删除回收站中的全部 {{ rows|length }} 个文件？此操作无法在本软件中恢复。')">
+      <input type="hidden" name="all" value="1"><button class="danger">清空回收站</button></form>{% endif %}
+  </div>
+  <form method="post" id="tf">
+  <table>
+    <tr><th style="width:34px"><input type="checkbox" onclick="document.querySelectorAll('.tp').forEach(c=>c.checked=this.checked)"></th>
+      <th style="width:150px">删除时间</th><th style="width:96px">业务日期</th><th style="width:70px">类别</th><th>标题</th><th style="width:170px">操作</th></tr>
+    {% for r in rows %}
+    <tr><td><input type="checkbox" class="tp" name="ids" value="{{ r.id }}"></td>
+      <td class="d">{{ r.deleted_at.replace('T',' ') }}</td><td class="d">{{ r.data_date }}</td>
+      <td><span class="cat">{{ r.category }}</span></td>
+      <td><b>{{ r.title }}</b><div class="sum">{{ r.original_name }} · 原位置：{{ r.prev_path }}</div></td>
+      <td class="ops">
+        <button class="ghost" formaction="{{ url_for('restore', one=r.id) }}">恢复</button>
+        <button class="ghost del" formaction="{{ url_for('purge', one=r.id) }}" data-title="{{ r.title }}" onclick="return confirm('彻底删除「' + this.dataset.title + '」？')">彻底删除</button>
+      </td></tr>
+    {% else %}<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:30px">回收站是空的</td></tr>{% endfor %}
+  </table>
+  {% if rows %}<div style="margin-top:12px;display:flex;gap:8px">
+    <button class="ghost" formaction="{{ url_for('restore') }}">恢复选中</button>
+    <button class="ghost del" formaction="{{ url_for('purge') }}" onclick="return confirm('彻底删除选中的文件？')">彻底删除选中</button>
+  </div>{% endif %}
+  </form>
+</div>""")
+
+
+def _form_ids() -> list[int]:
+    raw = request.form.getlist("ids") + [request.args.get("one", "")]
+    return [int(x) for part in raw for x in str(part).split(",") if x.strip().isdigit()]
+
+
+@app.post("/delete")
+def delete_files():
+    ids = _form_ids()
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        with _scan_lock:
+            n = core.trash_files(cfg, con, ids)
+    except OSError as e:
+        return redirect(url_for("index", msg=f"删除失败：{e}（文件可能正被 Excel 打开，请关闭后重试）"))
+    finally:
+        con.close()
+    return redirect(url_for("index", msg=f"已将 {n} 个文件移到回收站，可在“回收站”中恢复。",
+                            deleted=",".join(map(str, ids))))
+
+
+@app.get("/trash")
+def trash():
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        rows = core.list_trash(con)
+    finally:
+        con.close()
+    return render_template_string(TRASH, rows=rows, msg=request.args.get("msg"),
+                                  keep_days=int(cfg.get("trash_keep_days", 30) or 0), **_common("trash"))
+
+
+@app.post("/restore")
+def restore():
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        with _scan_lock:
+            n = core.restore_files(cfg, con, _form_ids())
+    except OSError as e:
+        return redirect(url_for("trash", msg=f"恢复失败：{e}"))
+    finally:
+        con.close()
+    return redirect(url_for("trash", msg=f"已恢复 {n} 个文件到原位置。"))
+
+
+@app.post("/purge")
+def purge():
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        with _scan_lock:
+            n = core.purge_files(cfg, con, None if request.form.get("all") else _form_ids())
+    finally:
+        con.close()
+    return redirect(url_for("trash", msg=f"已彻底删除 {n} 个文件（已放入 Windows 回收站）。"))
+
+
 def _common(page: str) -> dict:
     cfg = C()
-    return {"page": page, "status": _status, "ai_on": core.DeepSeek(cfg).enabled, "cfg": cfg}
+    con = core.connect(cfg)
+    try:
+        trash_n = con.execute("SELECT COUNT(*) FROM files WHERE deleted_at IS NOT NULL").fetchone()[0]
+    finally:
+        con.close()
+    return {"page": page, "status": _status, "ai_on": core.DeepSeek(cfg).enabled, "cfg": cfg, "trash_n": trash_n}
 
 
 def render_home(rows, q=None, ai_res=None, msg=None, **f):
@@ -404,7 +522,8 @@ def render_home(rows, q=None, ai_res=None, msg=None, **f):
         if fl["keywords"]:
             parts.append("关键词 " + "、".join(fl["keywords"]))
         ai_desc = "；".join(parts) or "不限条件"
-    return render_template_string(HOME, rows=rows, q=q, ai_res=ai_res, ai_desc=ai_desc,
+    deleted_ids = [i for i in request.args.get("deleted", "").split(",") if i.isdigit()]
+    return render_template_string(HOME, rows=rows, q=q, ai_res=ai_res, ai_desc=ai_desc, deleted_ids=deleted_ids,
                                   msg=msg or request.args.get("msg"), st=st, f=f, inbox=cfg["inbox_dir"],
                                   **_common("home"))
 
@@ -427,7 +546,7 @@ def chat_page():
     con = core.connect(C())
     try:
         files = [core.row_to_dict(r) for i in ids
-                 for r in [con.execute("SELECT * FROM files WHERE id=?", (i,)).fetchone()] if r]
+                 for r in [con.execute("SELECT * FROM files WHERE id=? AND deleted_at IS NULL", (i,)).fetchone()] if r]
     finally:
         con.close()
     return render_template_string(CHAT, files=files, ids=[f["id"] for f in files], msg=None, **_common("chat"))
@@ -627,6 +746,10 @@ def settings_save():
         raw["scan_interval_seconds"] = max(10, int(fm.get("scan_interval_seconds") or 60))
     except ValueError:
         pass
+    try:
+        raw["trash_keep_days"] = max(0, int(fm.get("trash_keep_days") or 0))
+    except ValueError:
+        pass
     core.save_raw_config(raw)
 
     msgs, ok = ["设置已保存"], True
@@ -664,7 +787,7 @@ def reanalyze_missing():
         with _scan_lock:
             con = core.connect(cfg)
             try:
-                for (fid,) in con.execute("SELECT id FROM files WHERE ai_used=0").fetchall():
+                for (fid,) in con.execute("SELECT id FROM files WHERE ai_used=0 AND deleted_at IS NULL").fetchall():
                     try:
                         core.reanalyze(cfg, con, ai, fid)
                     except Exception as e:

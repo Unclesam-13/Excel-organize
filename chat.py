@@ -95,7 +95,7 @@ def load_sheets(path: Path) -> list[dict]:
 def load_files(con, file_ids) -> dict[int, dict]:
     files = {}
     for fid in list(dict.fromkeys(int(i) for i in file_ids))[:MAX_FILES]:
-        row = con.execute("SELECT * FROM files WHERE id=?", (fid,)).fetchone()
+        row = con.execute("SELECT * FROM files WHERE id=? AND deleted_at IS NULL", (fid,)).fetchone()
         if not row:
             continue
         meta = core.row_to_dict(row)

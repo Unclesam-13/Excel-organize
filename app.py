@@ -10,6 +10,7 @@ Excel 图书馆 - 命令行入口
   python app.py stats                        统计
   python app.py reanalyze --all              用 AI 重新归档已入库文件
   python app.py chat 3 5 8                   选中 #3 #5 #8 文件，向 AI 提问表格内容
+  python app.py delete 3 5                   删除（移到回收站）；restore 3 恢复；trash 查看回收站；purge 3 / purge --all 彻底删除
   python app.py setkey                       设置 DeepSeek API Key
 """
 from __future__ import annotations
@@ -162,7 +163,8 @@ def cmd_reanalyze(cfg, args):
         print("请先设置 DeepSeek API Key（app.py setkey）")
         return
     con = core.connect(cfg)
-    ids = [r[0] for r in con.execute("SELECT id FROM files WHERE ai_used=0 OR ?", (int(args.all),))] \
+    ids = [r[0] for r in con.execute(
+        "SELECT id FROM files WHERE deleted_at IS NULL AND (ai_used=0 OR ?)", (int(args.all),))] \
         if (args.all or args.missing) else args.ids
     for fid in ids:
         try:
@@ -206,6 +208,28 @@ def cmd_chat(cfg, args):
         history += [{"role": "user", "content": q}, {"role": "assistant", "content": res["answer"]}]
 
 
+def cmd_delete(cfg, args):
+    print(f"已移到回收站 {core.trash_files(cfg, core.connect(cfg), args.ids)} 个")
+
+
+def cmd_restore(cfg, args):
+    print(f"已恢复 {core.restore_files(cfg, core.connect(cfg), args.ids)} 个")
+
+
+def cmd_trash(cfg, args):
+    rows = core.list_trash(core.connect(cfg))
+    for r in rows:
+        print(f"#{r['id']:<5} 删除于 {r['deleted_at']}  [{r['category']}] {r['title']}")
+    print(f"\n回收站共 {len(rows)} 个")
+
+
+def cmd_purge(cfg, args):
+    if not args.all and not args.ids:
+        print("请指定编号，或用 --all 清空回收站")
+        return
+    print(f"已彻底删除 {core.purge_files(cfg, core.connect(cfg), None if args.all else args.ids)} 个")
+
+
 def cmd_setkey(cfg, args):
     key = args.key or input("请粘贴 DeepSeek API Key（sk- 开头）：").strip()
     if not key:
@@ -246,6 +270,13 @@ def main(argv=None):
     r.add_argument("--missing", action="store_true", help="只处理当初没用上 AI 的文件")
     ch = sub.add_parser("chat", help="选中文件向 AI 提问内容")
     ch.add_argument("ids", nargs="+", type=int)
+    for name, hlp in (("delete", "删除（移到回收站）"), ("restore", "从回收站恢复")):
+        x = sub.add_parser(name, help=hlp)
+        x.add_argument("ids", nargs="+", type=int)
+    sub.add_parser("trash", help="查看回收站")
+    pg = sub.add_parser("purge", help="彻底删除回收站中的文件")
+    pg.add_argument("ids", nargs="*", type=int)
+    pg.add_argument("--all", action="store_true")
     k = sub.add_parser("setkey", help="设置 DeepSeek API Key")
     k.add_argument("key", nargs="?")
 

@@ -64,6 +64,15 @@ try:
                                  headers={"Content-Type": "application/json"}, method="POST")
     resp = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))
     assert "API Key" in resp.get("error", ""), f"未设置 Key 时应提示：{resp}"
+    post = lambda path, body=b"": urllib.request.urlopen(urllib.request.Request(base + path, data=body, method="POST"), timeout=20)
+    post("/delete", b"ids=1")
+    assert "回收站 (1)" in urllib.request.urlopen(base + "/trash", timeout=10).read().decode("utf-8"), "删除后应在回收站"
+    assert not Path(rows[0][2]).exists(), "删除后文件应移出原位置"
+    post("/restore?one=1")
+    assert Path(rows[0][2]).exists(), "恢复后文件应回到原位置"
+    post("/delete", b"ids=1")
+    post("/purge?one=1")  # 打包版在 Windows 上会放进系统回收站
+    assert sqlite3.connect(home / "data" / "library.db").execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
     urllib.request.urlopen(urllib.request.Request(base + "/quit", data=b"", method="POST"), timeout=5)
     p.wait(timeout=20)
 finally:

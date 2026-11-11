@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 
 APP_NAME = "Excel 图书馆"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 FROZEN = getattr(sys, "frozen", False)  # 是否为打包后的 exe
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".csv"}
@@ -89,6 +89,7 @@ def default_config() -> dict:
         "web_auto_scan": True,
         "chat_full_data_chars": 40000,
         "chat_preview_rows": 30,
+        "trash_keep_days": 30,
     }
 
 
@@ -193,6 +194,11 @@ def connect(cfg: dict) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA foreign_keys=ON")
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(files)")}
+    for col in ("deleted_at", "prev_path"):  # v1.3 新增：回收站
+        if col not in cols:
+            con.execute(f"ALTER TABLE files ADD COLUMN {col} TEXT")
+    con.commit()
     return con
 
 
@@ -540,7 +546,10 @@ def _decide_date(path: Path, meta: dict, prof: dict) -> tuple[str, str]:
 # ----------------------------------------------------------------------------- 入库
 def ingest_file(path: Path, cfg: dict, con: sqlite3.Connection, ai: DeepSeek) -> dict:
     digest = file_sha256(path)
-    dup = con.execute("SELECT id, stored_path FROM files WHERE file_hash=?", (digest,)).fetchone()
+    dup = con.execute("SELECT id, stored_path, deleted_at FROM files WHERE file_hash=?", (digest,)).fetchone()
+    if dup and dup["deleted_at"]:  # 同内容的文件在回收站里：彻底删除旧记录，按新文件重新入库
+        purge_files(cfg, con, [dup["id"]])
+        dup = None
     if dup:
         if cfg.get("after_ingest", "move") == "copy":
             log.info("重复文件(与 #%s 相同)，跳过：%s", dup["id"], path.name)
@@ -653,6 +662,10 @@ def scan_inbox(cfg: dict, ai: DeepSeek | None = None) -> dict:
                     except OSError:
                         pass
                     stats["items"].append({"status": "failed", "name": p.name, "error": str(e)})
+            keep = int(cfg.get("trash_keep_days", 30) or 0)
+            purged = purge_files(cfg, con, older_than_days=keep) if keep > 0 else 0
+            if purged:
+                log.info("回收站中超过 %s 天的 %s 个文件已彻底删除", keep, purged)
             if stats["ok"]:
                 export_index(cfg, con)
         finally:
@@ -684,6 +697,94 @@ def reanalyze(cfg: dict, con: sqlite3.Connection, ai: DeepSeek, file_id: int) ->
     return {"id": file_id, **meta, "data_date": data_date}
 
 
+# ----------------------------------------------------------------------------- 删除 / 回收站
+TRASH_DIR = "_回收站"
+
+
+def trash_files(cfg: dict, con: sqlite3.Connection, ids) -> int:
+    """删除：文件移到 图书馆\\_回收站\\，记录标记为已删除，可恢复。"""
+    n = 0
+    for fid in ids:
+        row = con.execute("SELECT * FROM files WHERE id=? AND deleted_at IS NULL", (int(fid),)).fetchone()
+        if not row:
+            continue
+        src = Path(row["stored_path"])
+        dest = src
+        if src.exists():
+            dest = _move_or_copy(src, cfg["library_dir"] / TRASH_DIR / src.name, "move")
+        with con:
+            con.execute("UPDATE files SET deleted_at=?, prev_path=?, stored_path=? WHERE id=?",
+                        (dt.datetime.now().isoformat(timespec="seconds"), str(src), str(dest), row["id"]))
+        log.info("已删除(移到回收站) #%s %s", row["id"], row["title"])
+        n += 1
+    if n:
+        export_index(cfg, con)
+    return n
+
+
+def restore_files(cfg: dict, con: sqlite3.Connection, ids) -> int:
+    n = 0
+    for fid in ids:
+        row = con.execute("SELECT * FROM files WHERE id=? AND deleted_at IS NOT NULL", (int(fid),)).fetchone()
+        if not row:
+            continue
+        src = Path(row["stored_path"])
+        target = Path(row["prev_path"]) if row["prev_path"] else \
+            target_path(cfg, row["category"], row["data_date"], row["original_name"])
+        dest = _move_or_copy(src, target, "move") if src.exists() else src
+        with con:
+            con.execute("UPDATE files SET deleted_at=NULL, prev_path=NULL, stored_path=? WHERE id=?", (str(dest), row["id"]))
+        log.info("已恢复 #%s %s", row["id"], row["title"])
+        n += 1
+    if n:
+        export_index(cfg, con)
+    return n
+
+
+def _remove_file(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        import winsys
+        if winsys.send_to_recycle_bin(path):  # Windows：放进系统回收站，还能找回
+            return
+    except Exception as e:
+        log.warning("放入系统回收站失败，直接删除：%s", e)
+    path.unlink()
+
+
+def purge_files(cfg: dict, con: sqlite3.Connection, ids=None, older_than_days: int | None = None) -> int:
+    """彻底删除回收站里的文件：ids=None 表示全部（可配合 older_than_days）。"""
+    sql, params = "SELECT id, stored_path, title FROM files WHERE deleted_at IS NOT NULL", []
+    if ids is not None:
+        ids = [int(i) for i in ids]
+        if not ids:
+            return 0
+        sql += f" AND id IN ({','.join('?' * len(ids))})"
+        params += ids
+    if older_than_days:
+        sql += " AND deleted_at < ?"
+        params.append((dt.datetime.now() - dt.timedelta(days=older_than_days)).isoformat(timespec="seconds"))
+    n = 0
+    for row in con.execute(sql, params).fetchall():
+        try:
+            _remove_file(Path(row["stored_path"]))
+        except OSError as e:
+            log.error("删除文件失败 #%s：%s（文件可能正被打开）", row["id"], e)
+            continue
+        with con:
+            con.execute("DELETE FROM contents WHERE file_id=?", (row["id"],))
+            con.execute("DELETE FROM files WHERE id=?", (row["id"],))
+        log.info("已彻底删除 #%s %s", row["id"], row["title"])
+        n += 1
+    return n
+
+
+def list_trash(con: sqlite3.Connection) -> list[dict]:
+    return [row_to_dict(r) for r in con.execute(
+        "SELECT * FROM files WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC")]
+
+
 # ----------------------------------------------------------------------------- 检索
 META_COLS = ("title", "summary", "tags", "keywords", "key_fields", "original_name", "category")
 
@@ -696,7 +797,7 @@ def search(con: sqlite3.Connection, keywords=(), categories=(), date_from=None, 
            match: str = "all", limit: int = 100) -> list[dict]:
     keywords = [k.strip() for k in keywords if k and k.strip()]
     categories = [c for c in categories if c]
-    where, params = [], []
+    where, params = ["deleted_at IS NULL"], []
     if categories:
         where.append(f"category IN ({','.join('?' * len(categories))})")
         params += categories
@@ -728,11 +829,12 @@ def search(con: sqlite3.Connection, keywords=(), categories=(), date_from=None, 
 
 def stats(con: sqlite3.Connection) -> dict:
     return {
-        "total": con.execute("SELECT COUNT(*) FROM files").fetchone()[0],
+        "total": con.execute("SELECT COUNT(*) FROM files WHERE deleted_at IS NULL").fetchone()[0],
+        "trash": con.execute("SELECT COUNT(*) FROM files WHERE deleted_at IS NOT NULL").fetchone()[0],
         "by_category": [tuple(r) for r in con.execute(
-            "SELECT category, COUNT(*) FROM files GROUP BY category ORDER BY COUNT(*) DESC")],
+            "SELECT category, COUNT(*) FROM files WHERE deleted_at IS NULL GROUP BY category ORDER BY COUNT(*) DESC")],
         "by_month": [tuple(r) for r in con.execute(
-            "SELECT substr(data_date,1,7) m, COUNT(*) FROM files GROUP BY m ORDER BY m DESC")],
+            "SELECT substr(data_date,1,7) m, COUNT(*) FROM files WHERE deleted_at IS NULL GROUP BY m ORDER BY m DESC")],
     }
 
 
@@ -799,7 +901,7 @@ def _rough_parse(question: str, cats: list[str]) -> dict:
 
 def ask(con: sqlite3.Connection, question: str, cfg: dict, ai: DeepSeek, top_n: int = 8) -> dict:
     cats = list(cfg["categories"].keys())
-    known_cats = [r[0] for r in con.execute("SELECT DISTINCT category FROM files")]
+    known_cats = [r[0] for r in con.execute("SELECT DISTINCT category FROM files WHERE deleted_at IS NULL")]
     cats = cats + [c for c in known_cats if c not in cats]
 
     filters = None
@@ -874,7 +976,8 @@ def export_index(cfg: dict, con: sqlite3.Connection | None = None) -> Path:
     own = con is None
     con = con or connect(cfg)
     try:
-        rows = [row_to_dict(r) for r in con.execute("SELECT * FROM files ORDER BY data_date DESC, id DESC")]
+        rows = [row_to_dict(r) for r in con.execute(
+            "SELECT * FROM files WHERE deleted_at IS NULL ORDER BY data_date DESC, id DESC")]
     finally:
         if own:
             con.close()
