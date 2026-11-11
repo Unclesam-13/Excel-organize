@@ -23,4 +23,4 @@
 
 ## 构建
 
-推送 `v*` 标签后，GitHub Actions 会自动打包、做冒烟测试，并发布 Release。在本地打包的方法：Windows 上装好 Python 3.12，双击 `打包成exe.bat`。
+每次推送到 `main`，GitHub Actions 都会自动打包、做冒烟测试，并把安装包发布到与 `core.py` 中 `VERSION` 对应的 Release（发新版时先修改 VERSION）。在本地打包的方法：Windows 上装好 Python 3.12，双击 `打包成exe.bat`。
