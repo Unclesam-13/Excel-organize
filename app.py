@@ -1,5 +1,5 @@
 """
-Excel 图书馆 - 命令行入口
+会计工作台 - 命令行入口
 
   python app.py scan                         处理收件箱一次（适合每日计划任务）
   python app.py watch                        持续监控收件箱
@@ -245,7 +245,7 @@ def cmd_setkey(cfg, args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Excel 图书馆")
+    p = argparse.ArgumentParser(description="会计工作台")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("scan", help="处理收件箱一次")
     w = sub.add_parser("watch", help="持续监控收件箱")

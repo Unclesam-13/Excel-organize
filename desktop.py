@@ -1,5 +1,5 @@
 """
-Excel 图书馆 - 桌面程序入口（打包为 ExcelLibrary.exe）
+会计工作台 - 桌面程序入口（打包为 ExcelLibrary.exe）
 
   ExcelLibrary.exe               打开程序窗口（已在后台运行时，直接打开窗口连接它）
   ExcelLibrary.exe --background  只在后台运行自动整理（开机自启用）
@@ -41,7 +41,7 @@ def _port_free(host: str, port: int) -> bool:
             return False
 
 
-def _message_box(text: str, title: str = "Excel 图书馆") -> None:
+def _message_box(text: str, title: str = core.APP_NAME) -> None:
     if os.name == "nt":
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, text, title, 0x40)
@@ -70,7 +70,7 @@ def open_window(url: str) -> bool:
             webview.settings["ALLOW_DOWNLOADS"] = True
         except Exception:
             pass
-        webview.create_window("Excel 图书馆", url, width=1280, height=840, min_size=(900, 600))
+        webview.create_window(core.APP_NAME, url, width=1280, height=840, min_size=(900, 600))
         webview.start()
         return True
     except Exception as e:

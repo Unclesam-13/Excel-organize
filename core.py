@@ -1,5 +1,5 @@
 """
-Excel 图书馆 - 核心逻辑
+会计工作台 - 核心逻辑
 收件箱里的 Excel -> 读取/画像 -> DeepSeek 归纳分类 -> 归档到 图书馆/类别/年-月/ -> 写入 SQLite -> 生成总目录
 """
 from __future__ import annotations
@@ -20,8 +20,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-APP_NAME = "Excel 图书馆"
-VERSION = "1.3.0"
+APP_NAME = "会计工作台"
+VERSION = "1.3.1"
 FROZEN = getattr(sys, "frozen", False)  # 是否为打包后的 exe
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".csv"}
@@ -58,7 +58,7 @@ BASE_DIR = DATA_HOME  # 配置里的相对路径以此为基准
 
 
 def default_config() -> dict:
-    user_root = (_documents_dir() / "Excel图书馆") if FROZEN else None
+    user_root = (_documents_dir() / "会计工作台") if FROZEN else None
     return {
         "inbox_dir": str(user_root / "收件箱") if user_root else "收件箱",
         "library_dir": str(user_root / "图书馆") if user_root else "图书馆",

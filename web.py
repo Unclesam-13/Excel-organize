@@ -1,5 +1,5 @@
 """
-Excel 图书馆 - 界面（Flask）。桌面版由 desktop.py 用独立窗口加载；也可单独运行：python web.py
+会计工作台 - 界面（Flask）。桌面版由 desktop.py 用独立窗口加载；也可单独运行：python web.py
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def scanner_loop():
 
 
 BASE = r"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>Excel 图书馆</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>会计工作台</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root{--b:#1f4e78;--bg:#f5f7fa;--line:#e3e7ee;--mut:#6b7280}
@@ -90,7 +90,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 .row input[type=text],.row input[type=password],.row textarea{width:100%}
 code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:12px}
 </style></head><body>
-<header><h1>📚 Excel 图书馆</h1>
+<header><h1>📊 会计工作台</h1>
 <nav><a href="{{ url_for('index') }}" class="{{ 'on' if page=='home' }}">文件库</a>
 <a href="{{ url_for('chat_page') }}" class="{{ 'on' if page=='chat' }}">AI 问表格</a>
 <a href="{{ url_for('trash') }}" class="{{ 'on' if page=='trash' }}">回收站{% if trash_n %} ({{ trash_n }}){% endif %}</a>

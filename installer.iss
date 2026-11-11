@@ -1,7 +1,7 @@
 ﻿; Inno Setup 6 script - builds ExcelLibrary_Setup_x.y.z.exe
 ; Run via build.py (passes /DMyAppVersion=...) or: iscc installer.iss
 
-#define MyAppName "Excel 图书馆"
+#define MyAppName "会计工作台"
 #ifndef MyAppVersion
   #define MyAppVersion "1.1.0"
 #endif
@@ -12,10 +12,11 @@ AppId={{B5E8A0F2-3C4D-4E6F-9A1B-2C3D4E5F6A7B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-AppPublisher=Excel Library
+AppPublisher=会计工作台
 DefaultDirName={localappdata}\Programs\ExcelLibrary
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+UsePreviousGroup=no
 PrivilegesRequired=lowest
 OutputDir=dist
 OutputBaseFilename=ExcelLibrary_Setup_{#MyAppVersion}
@@ -36,6 +37,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "dist\ExcelLibrary\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; v1.3.0 及以前的旧名称快捷方式
+Type: files; Name: "{autodesktop}\Excel 图书馆.lnk"
+Type: filesandordirs; Name: "{autoprograms}\Excel 图书馆"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"

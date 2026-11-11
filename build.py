@@ -48,8 +48,8 @@ def run_pyinstaller() -> Path:
         ver.write_text(f"""VSVersionInfo(
   ffi=FixedFileInfo(filevers={v}, prodvers={v}),
   kids=[StringFileInfo([StringTable('080404B0', [
-    StringStruct('FileDescription', 'Excel 图书馆'),
-    StringStruct('ProductName', 'Excel 图书馆'),
+    StringStruct('FileDescription', '会计工作台'),
+    StringStruct('ProductName', '会计工作台'),
     StringStruct('FileVersion', '{VERSION}'),
     StringStruct('ProductVersion', '{VERSION}'),
     StringStruct('OriginalFilename', 'ExcelLibrary.exe')])]),

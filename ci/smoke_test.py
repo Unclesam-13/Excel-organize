@@ -56,7 +56,7 @@ try:
         raise AssertionError("后台服务未启动")
     for path in ("/", "/settings", "/?k=" + urllib.parse.quote("螺栓")):
         html = urllib.request.urlopen(base + path, timeout=10).read().decode("utf-8")
-        assert "Excel 图书馆" in html, path
+        assert "会计工作台" in html and "图书馆</h1>" not in html, path
     assert "鑫源五金" in html or "供应商" in html, "关键词搜索应命中"
     html = urllib.request.urlopen(base + "/chat?ids=1", timeout=10).read().decode("utf-8")
     assert "已选文件" in html and "#1" in html, "问答页应列出选中文件"

@@ -1,4 +1,4 @@
-# 📚 Excel 图书馆（Excel-organize）
+# 📊 会计工作台（Excel-organize）
 
 这个 Windows 桌面软件每天自动整理新收到的 Excel，用 DeepSeek 归纳内容，然后按 **日期 / 类别** 归档，需要时可以用一句中文让 AI 找到对应的表格。
 
