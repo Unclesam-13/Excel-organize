@@ -58,6 +58,12 @@ try:
         html = urllib.request.urlopen(base + path, timeout=10).read().decode("utf-8")
         assert "Excel 图书馆" in html, path
     assert "鑫源五金" in html or "供应商" in html, "关键词搜索应命中"
+    html = urllib.request.urlopen(base + "/chat?ids=1", timeout=10).read().decode("utf-8")
+    assert "已选文件" in html and "#1" in html, "问答页应列出选中文件"
+    req = urllib.request.Request(base + "/api/chat", data=json.dumps({"ids": [1], "question": "合计多少"}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    resp = json.loads(urllib.request.urlopen(req, timeout=20).read().decode("utf-8"))
+    assert "API Key" in resp.get("error", ""), f"未设置 Key 时应提示：{resp}"
     urllib.request.urlopen(urllib.request.Request(base + "/quit", data=b"", method="POST"), timeout=5)
     p.wait(timeout=20)
 finally:

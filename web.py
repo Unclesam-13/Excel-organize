@@ -12,6 +12,7 @@ from pathlib import Path
 
 from flask import Flask, abort, redirect, render_template_string, request, send_file, url_for
 
+import chat as chat_mod
 import core
 import winsys
 
@@ -78,6 +79,10 @@ th{background:#f0f3f7;font-weight:600;font-size:13px}td.d{white-space:nowrap}
 .msg{background:#fff7e6;border:1px solid #ffd591;padding:8px 12px;border-radius:6px;margin-bottom:12px}
 .ok{background:#ecfdf3;border-color:#abefc6}
 .up{display:flex;gap:8px;align-items:center;font-size:13px;flex-wrap:wrap}
+.pickbar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:#fff;border:1px solid #c9d3df;box-shadow:0 6px 24px rgba(0,0,0,.15);border-radius:10px;padding:10px 14px;display:flex;gap:12px;align-items:center;max-width:92vw;z-index:9}
+.pickbar button{white-space:nowrap;flex:none}
+.pickbar .names{color:var(--mut);display:inline-block;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+input[type=checkbox]{width:16px;height:16px;cursor:pointer}
 .set{max-width:860px;margin:20px auto;padding:0 24px}.set h2{font-size:16px;margin:4px 0 12px}
 .row{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin:10px 0}.row label{color:#374151}
 .row .hint{grid-column:2;color:var(--mut);font-size:12px;margin-top:-6px}
@@ -86,6 +91,7 @@ code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:12px}
 </style></head><body>
 <header><h1>📚 Excel 图书馆</h1>
 <nav><a href="{{ url_for('index') }}" class="{{ 'on' if page=='home' }}">文件库</a>
+<a href="{{ url_for('chat_page') }}" class="{{ 'on' if page=='chat' }}">AI 问表格</a>
 <a href="{{ url_for('settings') }}" class="{{ 'on' if page=='settings' }}">设置</a>
 <a href="{{ url_for('open_dir', which='inbox') }}">打开收件箱</a>
 <a href="{{ url_for('open_dir', which='library') }}">打开图书馆</a></nav>
@@ -122,9 +128,10 @@ HOME = BASE.replace("{% block body %}{% endblock %}", r"""
   <div class="card ai"><div class="q">理解为：{{ ai_desc }}</div><div><b>AI：</b>{{ ai_res.answer }}</div></div>
   {% endif %}
   <table>
-    <tr><th style="width:96px">日期</th><th style="width:70px">类别</th><th>标题 / 摘要</th><th style="width:150px">操作</th></tr>
+    <tr><th style="width:34px"><input type="checkbox" id="pickAll" title="全选本页"></th><th style="width:96px">日期</th><th style="width:70px">类别</th><th>标题 / 摘要</th><th style="width:200px">操作</th></tr>
     {% for r in rows %}
     <tr>
+      <td><input type="checkbox" class="pick" value="{{ r.id }}" data-title="{{ r.title }}"></td>
       <td class="d">{{ r.data_date }}<br><span style="color:#9ca3af;font-size:12px">#{{ r.id }}</span></td>
       <td><span class="cat">{{ r.category }}</span></td>
       <td><b>{{ r.title }}</b>
@@ -134,12 +141,13 @@ HOME = BASE.replace("{% block body %}{% endblock %}", r"""
           <span style="color:#9ca3af;font-size:12px">{{ r.original_name }} · {{ r.total_rows }} 行</span></div>
       </td>
       <td class="ops">
+        <a class="btn ghost" href="{{ url_for('chat_page', ids=r.id) }}" title="就这个文件的内容向 AI 提问">问 AI</a>
         <a class="btn ghost" href="{{ url_for('open_file', fid=r.id) }}">打开</a>
         <a class="btn ghost" href="{{ url_for('open_folder', fid=r.id) }}">文件夹</a>
         <a class="btn ghost" href="{{ url_for('download', fid=r.id) }}">下载</a>
       </td>
     </tr>
-    {% else %}<tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:30px">没有找到文件</td></tr>{% endfor %}
+    {% else %}<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:30px">没有找到文件</td></tr>{% endfor %}
   </table>
   <div class="card" style="margin-top:14px">
     <form class="up" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
@@ -151,7 +159,45 @@ HOME = BASE.replace("{% block body %}{% endblock %}", r"""
       <span style="color:var(--mut)">收件箱：<code>{{ inbox }}</code></span>
     </div>
   </div>
-</main></div>""")
+  <div style="height:70px"></div>
+</main></div>
+<div id="pickbar" class="pickbar" style="display:none">
+  <span>已选 <b id="pickN">0</b> 个文件：<span id="pickNames" class="names"></span></span>
+  <button onclick="goChat()">💬 向 AI 提问选中文件的内容</button>
+  <button class="ghost" onclick="clearPicks()">清空</button>
+</div>
+<script>
+const KEY = 'excellib.picked';
+let picked = {};
+try { picked = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { picked = {}; }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(picked)); } catch (e) {} render(); }
+function render() {
+  const ids = Object.keys(picked);
+  document.getElementById('pickbar').style.display = ids.length ? 'flex' : 'none';
+  document.getElementById('pickN').textContent = ids.length;
+  document.getElementById('pickNames').textContent = ids.map(i => picked[i]).join('、');
+  document.querySelectorAll('.pick').forEach(cb => cb.checked = !!picked[cb.value]);
+  const all = document.querySelectorAll('.pick');
+  document.getElementById('pickAll').checked = all.length > 0 && [...all].every(cb => cb.checked);
+}
+document.querySelectorAll('.pick').forEach(cb => cb.addEventListener('change', () => {
+  if (cb.checked) {
+    if (Object.keys(picked).length >= 10) { cb.checked = false; alert('一次最多选择 10 个文件'); return; }
+    picked[cb.value] = cb.dataset.title;
+  } else delete picked[cb.value];
+  save();
+}));
+document.getElementById('pickAll').addEventListener('change', e => {
+  document.querySelectorAll('.pick').forEach(cb => {
+    if (e.target.checked && Object.keys(picked).length < 10) picked[cb.value] = cb.dataset.title;
+    if (!e.target.checked) delete picked[cb.value];
+  });
+  save();
+});
+function clearPicks() { picked = {}; save(); }
+function goChat() { location.href = '{{ url_for("chat_page") }}?ids=' + Object.keys(picked).join(','); }
+render();
+</script>""")
 
 SETTINGS = BASE.replace("{% block body %}{% endblock %}", r"""
 <div class="set">
@@ -200,6 +246,141 @@ SETTINGS = BASE.replace("{% block body %}{% endblock %}", r"""
 </div>""")
 
 
+CHAT = BASE.replace("{% block body %}{% endblock %}", r"""
+<style>
+.chat{display:flex;gap:18px;padding:18px 24px;height:calc(100vh - 52px)}
+.files{width:290px;flex:none;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}
+.files h3{font-size:13px;color:var(--mut);margin:0 0 8px}
+.fi{border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px}
+.fi b{display:block}.fi .m{color:var(--mut);font-size:12px}.fi .x{float:right;color:#9ca3af;text-decoration:none;font-size:15px;line-height:1}
+.fi .x:hover{color:#b42318}
+.conv{flex:1;display:flex;flex-direction:column;min-width:0;background:#fff;border:1px solid var(--line);border-radius:8px}
+#msgs{flex:1;overflow:auto;padding:16px 18px}
+.m-u{margin:10px 0 10px auto;max-width:75%;background:#e8f0f8;border-radius:10px 10px 2px 10px;padding:8px 12px;white-space:pre-wrap;width:fit-content}
+.m-a{margin:10px 0;max-width:92%;background:#f8fafc;border:1px solid var(--line);border-radius:10px 10px 10px 2px;padding:10px 14px}
+.m-a p{margin:4px 0}.m-a table.md{border-collapse:collapse;margin:8px 0;font-size:13px;width:auto}
+.m-a table.md th,.m-a table.md td{border:1px solid #d5dce5;padding:4px 8px}.m-a table.md th{background:#eef2f7}
+.m-a pre{background:#f0f3f7;padding:8px;border-radius:6px;overflow:auto;font-size:12px}
+.m-a h4{margin:8px 0 4px}
+.steps{font-size:12px;color:var(--mut);margin-top:6px}.steps summary{cursor:pointer}
+.err{color:#b42318}
+.inp{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+.inp textarea{flex:1;resize:none;height:62px;font-size:14px}
+.sugg{padding:0 12px 10px;display:flex;gap:6px;flex-wrap:wrap}
+.sugg button{background:#f0f3f7;color:#374151;border:1px solid var(--line);font-size:12px;padding:4px 10px;border-radius:14px}
+.hint0{color:var(--mut);text-align:center;margin-top:60px}
+.dots:after{content:'…';animation:d 1s steps(3) infinite}@keyframes d{0%{content:'.'}50%{content:'..'}100%{content:'...'}}
+</style>
+<div class="chat">
+  <div class="files">
+    <h3>已选文件（{{ files|length }}）</h3>
+    {% for f in files %}
+    <div class="fi"><a class="x" href="#" onclick="removeFile({{ f.id }});return false" title="移除">×</a>
+      <b>#{{ f.id }} {{ f.title }}</b>
+      <div class="m">{{ f.data_date }} · {{ f.category }} · {{ f.total_rows }} 行</div>
+      <div class="m">{% for s in f.sheets %}{{ s.name }}({{ s.rows }}行){% if not loop.last %}、{% endif %}{% endfor %}</div>
+      <div style="margin-top:4px"><a class="btn ghost" href="{{ url_for('open_file', fid=f.id) }}">打开</a></div>
+    </div>
+    {% else %}
+    <div class="m" style="color:var(--mut)">还没有选择文件。请回到 <a href="{{ url_for('index') }}">文件库</a> 勾选要提问的 Excel（最多 10 个）。</div>
+    {% endfor %}
+    {% if files %}<a class="btn ghost" href="{{ url_for('index') }}">＋ 回文件库添加更多</a>{% endif %}
+  </div>
+  <div class="conv">
+    <div id="msgs">
+      {% if not ai_on %}<div class="hint0 err">还没有设置 DeepSeek API Key，请先到 <a href="{{ url_for('settings') }}">设置</a> 里填写。</div>
+      {% elif files %}<div class="hint0" id="hello">可以直接问这些表格里的内容，例如汇总、对比、查找某条记录、找异常。<br>AI 会调用本地查询工具精确计算，不会心算。</div>{% endif %}
+    </div>
+    {% if files %}
+    <div class="sugg">
+      <button onclick="ask(this.textContent)">概括这几个表格的主要内容</button>
+      <button onclick="ask(this.textContent)">各文件的关键数字分别是多少？做个对比表</button>
+      <button onclick="ask(this.textContent)">有没有异常或需要注意的数据？</button>
+      <button onclick="newChat()" title="清空对话">🗑 新对话</button>
+    </div>
+    <div class="inp">
+      <textarea id="q" placeholder="输入问题，Enter 发送，Shift+Enter 换行" {{ 'disabled' if not ai_on }}></textarea>
+      <button id="send" onclick="ask()" {{ 'disabled' if not ai_on }}>发送</button>
+    </div>
+    {% endif %}
+  </div>
+</div>
+<script>
+const IDS = {{ ids|tojson }};
+const KEY = 'excellib.picked';
+let history = [];
+let busy = false;
+if (!IDS.length) {
+  try {
+    const p = JSON.parse(localStorage.getItem(KEY) || '{}');
+    if (Object.keys(p).length) location.replace('?ids=' + Object.keys(p).join(','));
+  } catch (e) {}
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c])); }
+function inline(s) { return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>'); }
+function md(text) {
+  const L = String(text).replace(/\r/g, '').split('\n'); const out = []; let i = 0;
+  const isList = l => /^\s*([-*]|\d+\.)\s+/.test(l);
+  while (i < L.length) {
+    const l = L[i];
+    if (l.startsWith('```')) { const b = []; i++; while (i < L.length && !L[i].startsWith('```')) b.push(L[i++]); i++; out.push('<pre>' + esc(b.join('\n')) + '</pre>'); continue; }
+    if (/^\s*\|/.test(l)) {
+      const rows = []; while (i < L.length && /^\s*\|/.test(L[i])) rows.push(L[i++]);
+      const cells = r => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+      const body = rows.slice(1).filter(r => !/^\s*\|?\s*:?-{2,}/.test(r));
+      out.push('<table class="md"><tr>' + cells(rows[0]).map(c => '<th>' + inline(c) + '</th>').join('') + '</tr>' +
+        body.map(r => '<tr>' + cells(r).map(c => '<td>' + inline(c) + '</td>').join('') + '</tr>').join('') + '</table>');
+      continue;
+    }
+    const h = l.match(/^#{1,4}\s+(.*)/); if (h) { out.push('<h4>' + inline(h[1]) + '</h4>'); i++; continue; }
+    if (isList(l)) {
+      const ord = /^\s*\d+\./.test(l); const it = [];
+      while (i < L.length && isList(L[i])) it.push(L[i++].replace(/^\s*([-*]|\d+\.)\s+/, ''));
+      out.push((ord ? '<ol>' : '<ul>') + it.map(x => '<li>' + inline(x) + '</li>').join('') + (ord ? '</ol>' : '</ul>')); continue;
+    }
+    if (!l.trim()) { i++; continue; }
+    const para = [];
+    while (i < L.length && L[i].trim() && !/^\s*(\||```|#{1,4}\s)/.test(L[i]) && !isList(L[i])) para.push(L[i++]);
+    out.push('<p>' + para.map(inline).join('<br>') + '</p>');
+  }
+  return out.join('');
+}
+function add(cls, html) {
+  const hello = document.getElementById('hello'); if (hello) hello.remove();
+  const d = document.createElement('div'); d.className = cls; d.innerHTML = html;
+  const box = document.getElementById('msgs'); box.appendChild(d); box.scrollTop = box.scrollHeight; return d;
+}
+async function ask(text) {
+  const q = (text || document.getElementById('q').value).trim();
+  if (!q || busy) return;
+  busy = true; document.getElementById('send').disabled = true; document.getElementById('q').value = '';
+  add('m-u', esc(q));
+  const a = add('m-a', '<span class="dots">正在读取表格并分析</span>');
+  try {
+    const r = await fetch('{{ url_for("api_chat") }}', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ids: IDS, question: q, history: history})});
+    const d = await r.json();
+    if (d.error) { a.innerHTML = '<span class="err">出错了：' + esc(d.error) + '</span>'; }
+    else {
+      let html = md(d.answer);
+      if (d.steps && d.steps.length) html += '<details class="steps"><summary>🔍 查询了 ' + d.steps.length + ' 次数据</summary>' + d.steps.map(s => '<div>· ' + esc(s) + '</div>').join('') + '</details>';
+      a.innerHTML = html;
+      history.push({role: 'user', content: q}, {role: 'assistant', content: d.answer});
+    }
+  } catch (e) { a.innerHTML = '<span class="err">请求失败：' + esc(e) + '</span>'; }
+  busy = false; document.getElementById('send').disabled = false; document.getElementById('q').focus();
+  const box = document.getElementById('msgs'); box.scrollTop = box.scrollHeight;
+}
+function newChat() { history = []; document.getElementById('msgs').innerHTML = ''; }
+function removeFile(id) {
+  try { const p = JSON.parse(localStorage.getItem(KEY) || '{}'); delete p[id]; localStorage.setItem(KEY, JSON.stringify(p)); } catch (e) {}
+  const rest = IDS.filter(x => x !== id); location.href = '?ids=' + rest.join(',');
+}
+const ta = document.getElementById('q');
+if (ta) ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); ask(); } });
+</script>""")
+
+
 def _common(page: str) -> dict:
     cfg = C()
     return {"page": page, "status": _status, "ai_on": core.DeepSeek(cfg).enabled, "cfg": cfg}
@@ -226,6 +407,51 @@ def render_home(rows, q=None, ai_res=None, msg=None, **f):
     return render_template_string(HOME, rows=rows, q=q, ai_res=ai_res, ai_desc=ai_desc,
                                   msg=msg or request.args.get("msg"), st=st, f=f, inbox=cfg["inbox_dir"],
                                   **_common("home"))
+
+
+def _parse_ids(raw) -> list[int]:
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    out = []
+    for x in raw or []:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            pass
+    return list(dict.fromkeys(out))[:chat_mod.MAX_FILES]
+
+
+@app.get("/chat")
+def chat_page():
+    ids = _parse_ids(request.args.get("ids", ""))
+    con = core.connect(C())
+    try:
+        files = [core.row_to_dict(r) for i in ids
+                 for r in [con.execute("SELECT * FROM files WHERE id=?", (i,)).fetchone()] if r]
+    finally:
+        con.close()
+    return render_template_string(CHAT, files=files, ids=[f["id"] for f in files], msg=None, **_common("chat"))
+
+
+@app.post("/api/chat")
+def api_chat():
+    data = request.get_json(silent=True) or {}
+    question = str(data.get("question", "")).strip()
+    if not question:
+        return {"error": "问题不能为空"}
+    cfg = C()
+    con = core.connect(cfg)
+    try:
+        return chat_mod.ask(con, cfg, core.DeepSeek(cfg), _parse_ids(data.get("ids")), question,
+                            history=data.get("history") or [])
+    except (RuntimeError, FileNotFoundError) as e:
+        core.log.warning("AI 问答：%s", e)
+        return {"error": str(e)}
+    except Exception as e:
+        core.log.exception("AI 问答出错")
+        return {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        con.close()
 
 
 @app.get("/ping")

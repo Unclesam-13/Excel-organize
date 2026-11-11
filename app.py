@@ -9,6 +9,7 @@ Excel 图书馆 - 命令行入口
   python app.py export                       重新生成 图书馆总目录.xlsx
   python app.py stats                        统计
   python app.py reanalyze --all              用 AI 重新归档已入库文件
+  python app.py chat 3 5 8                   选中 #3 #5 #8 文件，向 AI 提问表格内容
   python app.py setkey                       设置 DeepSeek API Key
 """
 from __future__ import annotations
@@ -171,6 +172,40 @@ def cmd_reanalyze(cfg, args):
     core.export_index(cfg, con)
 
 
+def cmd_chat(cfg, args):
+    import chat
+    ai = core.DeepSeek(cfg)
+    con = core.connect(cfg)
+    names = [f"#{r['id']} {r['title']}" for i in args.ids
+             for r in [con.execute("SELECT id, title FROM files WHERE id=?", (i,)).fetchone()] if r]
+    if not names:
+        print("没有找到这些编号的文件（可先用 search / ask 查编号）")
+        return
+    print("已选：" + "、".join(names) + "\n直接输入问题，q 退出，new 开始新对话")
+    history: list[dict] = []
+    while True:
+        try:
+            q = input("\n问> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if q.lower() in ("q", "quit", "exit", "退出"):
+            break
+        if q.lower() == "new":
+            history = []
+            continue
+        if not q:
+            continue
+        try:
+            res = chat.ask(con, cfg, ai, args.ids, q, history)
+        except Exception as e:
+            print(f"出错：{e}")
+            continue
+        for st in res["steps"]:
+            print(f"  🔍 {st}")
+        print("\n" + res["answer"])
+        history += [{"role": "user", "content": q}, {"role": "assistant", "content": res["answer"]}]
+
+
 def cmd_setkey(cfg, args):
     key = args.key or input("请粘贴 DeepSeek API Key（sk- 开头）：").strip()
     if not key:
@@ -209,6 +244,8 @@ def main(argv=None):
     r.add_argument("ids", nargs="*", type=int)
     r.add_argument("--all", action="store_true", help="全部重新归档")
     r.add_argument("--missing", action="store_true", help="只处理当初没用上 AI 的文件")
+    ch = sub.add_parser("chat", help="选中文件向 AI 提问内容")
+    ch.add_argument("ids", nargs="+", type=int)
     k = sub.add_parser("setkey", help="设置 DeepSeek API Key")
     k.add_argument("key", nargs="?")
 

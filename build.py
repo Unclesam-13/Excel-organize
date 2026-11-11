@@ -33,6 +33,7 @@ def run_pyinstaller() -> Path:
         "--hidden-import", "openpyxl",
         "--hidden-import", "xlrd",
         "--hidden-import", "web",
+        "--hidden-import", "chat",
         "--hidden-import", "winsys",
         "--collect-all", "webview",
         "--exclude-module", "tkinter",

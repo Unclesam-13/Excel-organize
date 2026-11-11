@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 
 APP_NAME = "Excel 图书馆"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 FROZEN = getattr(sys, "frozen", False)  # 是否为打包后的 exe
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".csv"}
@@ -87,6 +87,8 @@ def default_config() -> dict:
         "web_host": "127.0.0.1",
         "web_port": 8765,
         "web_auto_scan": True,
+        "chat_full_data_chars": 40000,
+        "chat_preview_rows": 30,
     }
 
 
@@ -339,16 +341,8 @@ class DeepSeek:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def chat_json(self, system: str, user: str, max_tokens: int = 2000, retries: int = 3) -> dict:
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"},
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "stream": False,
-            **self.extra,
-        }
+    def _post(self, payload: dict, retries: int, parse=None):
+        payload = {"model": self.model, "stream": False, **payload, **self.extra}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         last_err: Exception | None = None
         for attempt in range(1, retries + 1):
@@ -356,19 +350,43 @@ class DeepSeek:
                 r = requests.post(f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=self.timeout)
                 if r.status_code in (401, 402):
                     raise RuntimeError(f"DeepSeek 认证/余额错误 {r.status_code}: {r.text[:200]}")
+                if r.status_code == 400:
+                    raise RuntimeError(f"DeepSeek 请求被拒绝 400: {r.text[:300]}")
                 r.raise_for_status()
-                content = (r.json()["choices"][0]["message"].get("content") or "").strip()
-                if not content:
-                    raise ValueError("DeepSeek 返回空内容")
-                content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
-                return json.loads(content)
+                msg = r.json()["choices"][0]["message"]
+                return parse(msg) if parse else msg
             except RuntimeError:
                 raise
-            except Exception as e:  # 网络、429、JSON 解析等 -> 重试
+            except Exception as e:  # 网络、429、5xx、JSON 解析等 -> 重试
                 last_err = e
                 log.warning("DeepSeek 调用失败(第%d次): %s", attempt, e)
-                time.sleep(2 * attempt)
+                if attempt < retries:
+                    time.sleep(2 * attempt)
         raise RuntimeError(f"DeepSeek 多次调用失败: {last_err}")
+
+    def chat_json(self, system: str, user: str, max_tokens: int = 2000, retries: int = 3) -> dict:
+        def parse(msg):
+            content = (msg.get("content") or "").strip()
+            if not content:
+                raise ValueError("DeepSeek 返回空内容")
+            return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", content))
+
+        return self._post({
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "response_format": {"type": "json_object"},
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+        }, retries, parse)
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None, max_tokens: int = 4000,
+             retries: int = 2, tool_choice: str | None = None) -> dict:
+        """普通多轮对话，可带函数调用工具；返回 assistant message（可能含 tool_calls）。"""
+        payload = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.3}
+        if tools:
+            payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+        return self._post(payload, retries)
 
 
 ANALYZE_SYSTEM = """你是一名严谨的资料管理员，负责给每天收到的 Excel 文件建立档案卡，方便以后检索。
