@@ -6,7 +6,7 @@
   python app.py ask "上周华东区的销售日报"     AI 自然语言找文件（不带问题则进入对话模式）
   python app.py search -k 发票 -c 财务 --from 2026-11-01 --to 2026-11-10
   python app.py open 12                      用 Excel 打开编号 12 的文件
-  python app.py export                       重新生成 图书馆总目录.xlsx
+  python app.py export                       重新生成 文件库总目录.xlsx
   python app.py stats                        统计
   python app.py reanalyze --all              用 AI 重新归档已入库文件
   python app.py chat 3 5 8                   选中 #3 #5 #8 文件，向 AI 提问表格内容

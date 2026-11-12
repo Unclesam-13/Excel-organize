@@ -161,6 +161,44 @@ def set_daily_task(enabled: bool, at: str = "08:00") -> None:
         raise RuntimeError((r.stderr or r.stdout).strip() or "schtasks 执行失败")
 
 
+def refresh_registrations() -> None:
+    """程序换了安装位置后，开机自启和定时任务里记录的程序路径会失效，启动时自动改成当前路径。"""
+    if not (SUPPORTED and core.FROZEN):
+        return
+    exe = sys.executable
+    if get_autostart():
+        current = ""
+        if IS_WIN:
+            import winreg
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+                    current = winreg.QueryValueEx(k, RUN_NAME)[0]
+            except OSError:
+                pass
+        else:
+            try:
+                with open(_agent_path(MAC_AUTOSTART), "rb") as f:
+                    current = " ".join(plistlib.load(f).get("ProgramArguments", []))
+            except Exception:
+                pass
+        if exe not in current:
+            set_autostart(True)
+    at = get_daily_task()
+    if at and ":" in at:
+        current = ""
+        if IS_WIN:
+            r = _schtasks("/query", "/tn", TASK_NAME, "/xml")
+            current = r.stdout if r.returncode == 0 else ""
+        else:
+            try:
+                with open(_agent_path(MAC_DAILY), "rb") as f:
+                    current = " ".join(plistlib.load(f).get("ProgramArguments", []))
+            except Exception:
+                pass
+        if exe not in current:
+            set_daily_task(True, at)
+
+
 # ---------------------------------------------------------------- 文件操作
 def open_in_explorer(path, select: bool = False) -> None:
     path = str(path)

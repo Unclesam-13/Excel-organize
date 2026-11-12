@@ -1,6 +1,6 @@
 """
 会计工作台 - 核心逻辑
-收件箱里的 Excel -> 读取/画像 -> DeepSeek 归纳分类 -> 归档到 图书馆/类别/年-月/ -> 写入 SQLite -> 生成总目录
+收件箱里的 Excel -> 读取/画像 -> DeepSeek 归纳分类 -> 归档到 文件库/类别/年-月/ -> 写入 SQLite -> 生成总目录
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 
 APP_NAME = "会计工作台"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 FROZEN = getattr(sys, "frozen", False)  # 是否为打包后的 exe
 APP_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".csv"}
@@ -60,12 +60,36 @@ CONFIG_PATH = DATA_HOME / "config.json"
 BASE_DIR = DATA_HOME  # 配置里的相对路径以此为基准
 
 
+def _writable(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        t = d / ".write_test"
+        t.write_text("ok", encoding="utf-8")
+        t.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def default_storage_root() -> Path | None:
+    """文件（收件箱/文件库/总目录）的默认存放位置。
+    Windows 打包版：安装目录（不可写时退回 文档\\会计工作台）；
+    Mac 打包版：文稿/会计工作台（.app 程序包内部不能存放文件，更新时会被整体替换）；
+    源码运行：返回 None，表示用相对路径（程序目录）。"""
+    if not FROZEN:
+        return None
+    if os.name == "nt" and _writable(APP_DIR):
+        return APP_DIR
+    return _documents_dir() / "会计工作台"
+
+
 def default_config() -> dict:
-    user_root = (_documents_dir() / "会计工作台") if FROZEN else None
+    user_root = default_storage_root()
     return {
         "inbox_dir": str(user_root / "收件箱") if user_root else "收件箱",
-        "library_dir": str(user_root / "图书馆") if user_root else "图书馆",
-        "index_xlsx": str(user_root / "图书馆总目录.xlsx") if user_root else "图书馆总目录.xlsx",
+        "library_dir": str(user_root / "文件库") if user_root else "文件库",
+        "index_xlsx": str(user_root / "文件库总目录.xlsx") if user_root else "文件库总目录.xlsx",
+        "storage_version": 2,
         "db_path": "data/library.db",
         "log_dir": "logs",
         "after_ingest": "move",
@@ -74,7 +98,7 @@ def default_config() -> dict:
         "preview_rows": 15,
         "max_content_chars": 200000,
         "deepseek": {"api_key": "", "base_url": "https://api.deepseek.com", "model": "deepseek-flash",
-                     "timeout": 120, "extra_body": {}},
+                     "timeout": 180, "thinking": False, "extra_body": {}},
         "default_category": "其他",
         "allow_new_category": False,
         "categories": {
@@ -104,6 +128,7 @@ def load_raw_config(path: Path | None = None) -> dict:
     if not path.exists():
         save_raw_config(defaults, path)
         return defaults
+    defaults.pop("storage_version")  # 老配置缺这个键时表示还没做过存储迁移
     raw = json.loads(path.read_text(encoding="utf-8-sig"))
     for k, v in defaults.items():
         if k not in raw:
@@ -351,15 +376,20 @@ class DeepSeek:
         self.api_key = ds.get("api_key", "")
         self.base_url = ds.get("base_url", "https://api.deepseek.com").rstrip("/")
         self.model = ds.get("model", "deepseek-flash")
-        self.timeout = ds.get("timeout", 120)
+        self.timeout = max(int(ds.get("timeout", 180) or 180), 60)
+        self.thinking = bool(ds.get("thinking", False))
         self.extra = ds.get("extra_body") or {}
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def _post(self, payload: dict, retries: int, parse=None):
-        payload = {"model": self.model, "stream": False, **payload, **self.extra}
+    def _post(self, payload: dict, retries: int, parse=None, thinking: bool | None = None):
+        # DeepSeek 默认开启“思考模式”：会先输出很长的思考过程，可能把 max_tokens 用完导致 content 为空，
+        # 而且带工具的多轮对话必须回传思考内容。这里默认关闭，设置里可打开“深度思考”。
+        think = self.thinking if thinking is None else thinking
+        payload = {"model": self.model, "stream": False,
+                   "thinking": {"type": "enabled" if think else "disabled"}, **payload, **self.extra}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         last_err: Exception | None = None
         for attempt in range(1, retries + 1):
@@ -370,7 +400,10 @@ class DeepSeek:
                 if r.status_code == 400:
                     raise RuntimeError(f"DeepSeek 请求被拒绝 400: {r.text[:300]}")
                 r.raise_for_status()
-                msg = r.json()["choices"][0]["message"]
+                choice = r.json()["choices"][0]
+                msg = choice["message"]
+                if choice.get("finish_reason") == "length":
+                    log.warning("DeepSeek 输出达到 max_tokens 上限被截断")
                 return parse(msg) if parse else msg
             except RuntimeError:
                 raise
@@ -393,10 +426,11 @@ class DeepSeek:
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
             "temperature": 0.2,
-        }, retries, parse)
+        }, retries, parse, thinking=False)
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None, max_tokens: int = 4000,
-             retries: int = 2, tool_choice: str | None = None, model: str | None = None) -> dict:
+             retries: int = 2, tool_choice: str | None = None, model: str | None = None,
+             thinking: bool | None = None) -> dict:
         """普通多轮对话，可带函数调用工具；返回 assistant message（可能含 tool_calls）。"""
         payload = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.3}
         if model:
@@ -405,7 +439,7 @@ class DeepSeek:
             payload["tools"] = tools
             if tool_choice:
                 payload["tool_choice"] = tool_choice
-        return self._post(payload, retries)
+        return self._post(payload, retries, thinking=thinking)
 
 
 ANALYZE_SYSTEM = """你是一名严谨的资料管理员，负责给每天收到的 Excel 文件建立档案卡，方便以后检索。
@@ -731,12 +765,156 @@ def refresh_file(cfg: dict, con: sqlite3.Connection, file_id: int) -> None:
                         [(file_id, s_, t) for s_, t in prof["contents"]])
 
 
+# ----------------------------------------------------------------------------- 更改存储位置 / 旧版迁移
+def resolve_path(value: str) -> Path:
+    p = Path(os.path.expandvars(str(value))).expanduser()
+    return p if p.is_absolute() else BASE_DIR / p
+
+
+def _move_tree(old: Path, new: Path, report: dict) -> dict:
+    """把 old 目录下的所有文件搬到 new（保持子目录结构），返回 {旧路径: 新路径}。"""
+    mapping = {}
+    files = [p for p in old.rglob("*") if p.is_file()]
+    for src in files:
+        dest = new / src.relative_to(old)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest = _unique_path(dest)
+            shutil.move(str(src), str(dest))
+            mapping[str(src)] = str(dest)
+            report["moved"] += 1
+        except OSError as e:
+            report["failed"].append(f"{src.name}：{e}")
+    for d in sorted((p for p in old.rglob("*") if p.is_dir()), key=lambda x: len(x.parts), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    try:
+        old.rmdir()
+    except OSError:
+        pass
+    return mapping
+
+
+def _rebase(path_str: str | None, old: Path, new: Path, mapping: dict) -> str | None:
+    if not path_str:
+        return path_str
+    if path_str in mapping:
+        return mapping[path_str]
+    try:
+        return str(new / Path(path_str).relative_to(old))
+    except ValueError:
+        return path_str
+
+
+def relocate_storage(changes: dict, move: bool = True, timeout: int = 120) -> dict:
+    """修改 收件箱/文件库/总目录 的位置；move=True 时把已有文件一起搬过去，并更新数据库里的路径。"""
+    changes = {k: str(v).strip() for k, v in changes.items() if k in ("inbox_dir", "library_dir", "index_xlsx") and str(v).strip()}
+    report = {"moved": 0, "failed": [], "changed": []}
+    if not changes:
+        return report
+    cfg = load_config()
+    new_paths = {k: resolve_path(v) for k, v in changes.items()}
+    for k in ("inbox_dir", "library_dir"):
+        if k in new_paths:
+            o, n = cfg[k].resolve(), new_paths[k].resolve()
+            if o != n and (o in n.parents or n in o.parents):
+                raise ValueError("新位置不能放在原位置里面（或反过来），请换一个文件夹")
+    deadline = time.time() + timeout
+    while True:
+        lock = ScanLock(cfg).__enter__()
+        if lock.acquired:
+            break
+        if time.time() > deadline:
+            raise RuntimeError("正在整理文件，请稍后再改位置")
+        time.sleep(1)
+    try:
+        con = connect(cfg)
+        try:
+            for key in ("library_dir", "inbox_dir"):
+                if key not in new_paths:
+                    continue
+                old, new = cfg[key], new_paths[key]
+                if old.resolve() == new.resolve():
+                    continue
+                report["changed"].append(key)
+                new.mkdir(parents=True, exist_ok=True)
+                if not (move and old.exists()):
+                    continue
+                mapping = _move_tree(old, new, report)
+                if key == "library_dir":
+                    with con:
+                        for row in con.execute("SELECT id, stored_path, prev_path FROM files").fetchall():
+                            sp = _rebase(row["stored_path"], old, new, mapping)
+                            pp = _rebase(row["prev_path"], old, new, mapping)
+                            if sp != row["stored_path"] or pp != row["prev_path"]:
+                                con.execute("UPDATE files SET stored_path=?, prev_path=? WHERE id=?", (sp, pp, row["id"]))
+            if "index_xlsx" in new_paths and cfg["index_xlsx"].resolve() != new_paths["index_xlsx"].resolve():
+                report["changed"].append("index_xlsx")
+                if move and cfg["index_xlsx"].exists():
+                    try:
+                        cfg["index_xlsx"].unlink()  # 总目录会在新位置重新生成
+                    except OSError:
+                        pass
+            raw = load_raw_config()
+            raw.update(changes)
+            save_raw_config(raw)
+            export_index(load_config(), con)
+        finally:
+            con.close()
+    finally:
+        lock.__exit__(None, None, None)
+    for k in ("inbox_dir", "library_dir"):  # 旧的上级目录（如 文档\\Excel图书馆）空了就删掉
+        if k in report["changed"]:
+            try:
+                cfg[k].parent.rmdir()
+            except OSError:
+                pass
+    log.info("存储位置已更改：%s，搬移 %s 个文件，失败 %s 个", changes, report["moved"], len(report["failed"]))
+    return report
+
+
+def migrate_legacy_storage() -> dict | None:
+    """升级到 v1.6：把旧默认位置（文档\\Excel图书馆、文档\\会计工作台 下的“图书馆”）搬到新默认位置，
+    并把“图书馆”改名为“文件库”。用户自己改过的位置不动。只执行一次。"""
+    raw = load_raw_config()
+    if int(raw.get("storage_version", 0) or 0) >= 2:
+        return None
+    new = default_config()
+    docs = _documents_dir()
+    legacy_roots = {(docs / "Excel图书馆").resolve(), (docs / "会计工作台").resolve(), BASE_DIR.resolve()}
+
+    def is_legacy(value, name) -> bool:
+        p = resolve_path(value)
+        return p.name == name and p.parent.resolve() in legacy_roots
+
+    changes = {}
+    if is_legacy(raw.get("library_dir", ""), "图书馆"):
+        changes["library_dir"] = new["library_dir"]
+    if is_legacy(raw.get("inbox_dir", ""), "收件箱"):
+        changes["inbox_dir"] = new["inbox_dir"]
+    if is_legacy(raw.get("index_xlsx", ""), "图书馆总目录.xlsx"):
+        changes["index_xlsx"] = new["index_xlsx"]
+    report = None
+    if changes:
+        try:
+            report = relocate_storage(changes, move=True)
+        except Exception as e:
+            log.error("旧版文件位置迁移失败，保留原位置：%s", e)
+            return None
+    raw = load_raw_config()
+    raw["storage_version"] = 2
+    save_raw_config(raw)
+    return report
+
+
 # ----------------------------------------------------------------------------- 删除 / 回收站
 TRASH_DIR = "_回收站"
 
 
 def trash_files(cfg: dict, con: sqlite3.Connection, ids) -> int:
-    """删除：文件移到 图书馆\\_回收站\\，记录标记为已删除，可恢复。"""
+    """删除：文件移到 文件库\\_回收站\\，记录标记为已删除，可恢复。"""
     n = 0
     for fid in ids:
         row = con.execute("SELECT * FROM files WHERE id=? AND deleted_at IS NULL", (int(fid),)).fetchone()

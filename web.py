@@ -96,8 +96,8 @@ code{background:#f0f3f7;padding:1px 5px;border-radius:4px;font-size:12px}
 <a href="{{ url_for('chat_page') }}" class="{{ 'on' if page=='chat' }}">AI 助手</a>
 <a href="{{ url_for('trash') }}" class="{{ 'on' if page=='trash' }}">回收站{% if trash_n %} ({{ trash_n }}){% endif %}</a>
 <a href="{{ url_for('settings') }}" class="{{ 'on' if page=='settings' }}">设置</a>
-<a href="{{ url_for('open_dir', which='inbox') }}">打开收件箱</a>
-<a href="{{ url_for('open_dir', which='library') }}">打开图书馆</a></nav>
+<a href="{{ url_for('open_dir', which='inbox') }}" title="打开收件箱文件夹">📂 收件箱</a>
+<a href="{{ url_for('open_dir', which='library') }}" title="打开文件库文件夹">📂 文件库</a></nav>
 <span class="s">{{ '● DeepSeek 已连接' if ai_on else '○ 未设置 API Key' }}<br>上次自动整理 {{ status.last_scan or '—' }}</span></header>
 {% block body %}{% endblock %}
 <script>
@@ -235,6 +235,7 @@ SETTINGS = BASE.replace("{% block body %}{% endblock %}", r"""
     <div class="row"><span></span><span class="hint">在 platform.deepseek.com 获取。不填也能用（按关键词规则归档）。</span></div>
     <div class="row"><label>模型</label><input type="text" name="model" value="{{ raw.deepseek.model }}"></div>
     <div class="row"><span></span><span class="hint">默认 deepseek-flash；需要更强理解可填 deepseek-v4-pro</span></div>
+    <div class="row"><label></label><label><input type="checkbox" name="thinking" {{ 'checked' if raw.deepseek.thinking }}> 深度思考（回答更慢、费用更高，复杂分析时再打开；图片识别和自动归档始终不用）</label></div>
     <div class="row"><label>识图模型</label><input type="text" name="vision_model" value="{{ raw.vision_model }}" placeholder="留空 = 使用上面的模型"></div>
     <div class="row"><span></span><span class="hint">识别图片用的模型。deepseek-flash 支持图片；如果上面改成了不支持图片的模型，这里填 deepseek-flash。</span></div>
     <div class="row"><label>接口地址</label><input type="text" name="base_url" value="{{ raw.deepseek.base_url }}"></div>
@@ -242,11 +243,12 @@ SETTINGS = BASE.replace("{% block body %}{% endblock %}", r"""
   </div>
   <div class="card"><h2>文件夹</h2>
     <div class="row"><label>收件箱</label><input type="text" name="inbox_dir" value="{{ raw.inbox_dir }}"></div>
-    <div class="row"><label>图书馆</label><input type="text" name="library_dir" value="{{ raw.library_dir }}"></div>
+    <div class="row"><label>文件库</label><input type="text" name="library_dir" value="{{ raw.library_dir }}"></div>
     <div class="row"><label>总目录文件</label><input type="text" name="index_xlsx" value="{{ raw.index_xlsx }}"></div>
-    <div class="row"><span></span><span class="hint">可填共享盘路径，如 \\服务器\共享\收件箱。修改图书馆位置不会移动已归档的文件。</span></div>
+    <div class="row"><span></span><span class="hint">默认存放在软件安装位置：<code>{{ default_root }}</code>。可以改成任意文件夹或共享盘，例如 <code>D:\会计资料\文件库</code>。</span></div>
+    <div class="row"><label></label><label><input type="checkbox" name="move_files" checked> 修改位置时，把已有文件一起搬到新位置（推荐）</label></div>
     <div class="row"><label>处理后原文件</label><select name="after_ingest">
-      <option value="move" {{ 'selected' if raw.after_ingest=='move' }}>移入图书馆（推荐）</option>
+      <option value="move" {{ 'selected' if raw.after_ingest=='move' }}>移入文件库（推荐）</option>
       <option value="copy" {{ 'selected' if raw.after_ingest=='copy' }}>复制，保留收件箱原件</option></select></div>
   </div>
   <div class="card"><h2>分类</h2>
@@ -492,7 +494,7 @@ async function writeProp(id) {
       (d.file_id ? '<a class="btn ghost" href="/open/' + d.file_id + '">打开文件</a>' : '<span class="r">新表已放入收件箱，稍后自动整理</span>') +
       '<button class="ghost" onclick="undoWrite(\'' + id + '\')">撤销</button>';
     WRITES[id] = d;
-    history.push({role: 'assistant', content: '（系统提示：用户已确认，' + rows.length + ' 行数据已写入「' + d.title + '」。）'});
+    history.push({role: 'user', content: '（系统提示：我已确认，' + rows.length + ' 行数据已写入「' + d.title + '」。）'});
   } catch (e) { st.innerHTML = '<span class="err">请求失败：' + esc(e) + '</span>'; card.querySelectorAll('.acts button').forEach(b => b.disabled = false); }
 }
 const WRITES = {};
@@ -504,7 +506,7 @@ async function undoWrite(id) {
     body: JSON.stringify({file_id: d.file_id, backup: d.backup, created: !!d.created})});
   const res = await r.json();
   card.querySelector('.acts').innerHTML = res.error ? '<span class="err">' + esc(res.error) + '</span>' : '<span class="r">↩ 已撤销这次写入</span>';
-  if (!res.error) history.push({role: 'assistant', content: '（系统提示：用户撤销了刚才写入「' + d.title + '」的数据。）'});
+  if (!res.error) history.push({role: 'user', content: '（系统提示：我撤销了刚才写入「' + d.title + '」的数据。）'});
 }
 function dropProp(id) { document.getElementById('p_' + id).querySelector('.acts').innerHTML = '<span class="r">已忽略</span>'; }
 
@@ -527,7 +529,7 @@ async function ask(text) {
       (d.proposals || []).forEach(p => html += propCard(p));
       if (d.steps && d.steps.length) html += '<details class="steps"><summary>🔍 处理了 ' + d.steps.length + ' 步</summary>' + d.steps.map(s => '<div>· ' + esc(s) + '</div>').join('') + '</details>';
       a.innerHTML = html;
-      history.push({role: 'user', content: d.user_content || q}, {role: 'assistant', content: d.answer});
+      history.push({role: 'user', content: d.user_content || q}, {role: 'assistant', content: d.answer, reasoning_content: d.reasoning || ''});
     }
   } catch (e) { a.innerHTML = '<span class="err">请求失败：' + esc(e) + '</span>'; }
   busy = false; document.getElementById('send').disabled = false; document.getElementById('q').focus();
@@ -929,6 +931,7 @@ def render_settings(msg=None, ok=False):
     return render_template_string(SETTINGS, raw=raw, cats_text=_cats_to_text(raw["categories"]), msg=msg, ok=ok,
                                   autostart=winsys.get_autostart(), daily=winsys.get_daily_task(),
                                   is_win=winsys.SUPPORTED, version=core.VERSION, data_home=core.DATA_HOME,
+                                  default_root=core.default_storage_root() or core.BASE_DIR,
                                   **_common("settings"))
 
 
@@ -945,9 +948,9 @@ def settings_save():
     raw["deepseek"]["model"] = fm.get("model", "").strip() or "deepseek-flash"
     raw["deepseek"]["base_url"] = fm.get("base_url", "").strip() or "https://api.deepseek.com"
     raw["vision_model"] = fm.get("vision_model", "").strip()
-    for k in ("inbox_dir", "library_dir", "index_xlsx"):
-        if fm.get(k, "").strip():
-            raw[k] = fm[k].strip()
+    path_changes = {k: fm[k].strip() for k in ("inbox_dir", "library_dir", "index_xlsx")
+                    if fm.get(k, "").strip() and fm[k].strip() != str(raw.get(k, "")).strip()}
+    raw["deepseek"]["thinking"] = bool(fm.get("thinking"))
     raw["after_ingest"] = "copy" if fm.get("after_ingest") == "copy" else "move"
     cats = _text_to_cats(fm.get("categories", ""))
     if cats:
@@ -968,6 +971,18 @@ def settings_save():
     core.save_raw_config(raw)
 
     msgs, ok = ["设置已保存"], True
+    if path_changes:
+        try:
+            with _scan_lock:
+                rep = core.relocate_storage(path_changes, move=bool(fm.get("move_files")))
+            if bool(fm.get("move_files")) and rep["moved"]:
+                msgs.append(f"已把 {rep['moved']} 个文件搬到新位置")
+            if rep["failed"]:
+                ok = False
+                msgs.append(f"{len(rep['failed'])} 个文件没能搬走（可能正被 Excel 打开）：" + "；".join(rep["failed"][:3]))
+        except Exception as e:
+            ok = False
+            msgs.append(f"修改文件位置失败：{e}")
     if winsys.SUPPORTED:
         try:
             if bool(fm.get("autostart")) != winsys.get_autostart():

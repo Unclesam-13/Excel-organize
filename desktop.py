@@ -86,6 +86,17 @@ def main() -> None:
         return
 
     host, port = cfg.get("web_host", "127.0.0.1"), int(cfg.get("web_port", 8765))
+    url_ = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
+    if not _ping(url_):  # 只有第一个实例做迁移，避免和正在运行的程序同时搬文件
+        rep = core.migrate_legacy_storage()
+        if rep:
+            core.log.info("已迁移到新的默认存储位置：搬移 %s 个文件", rep["moved"])
+        try:
+            import winsys
+            winsys.refresh_registrations()
+        except Exception as e:
+            core.log.warning("更新开机自启/定时任务路径失败：%s", e)
+        cfg = core.load_config()
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
 
     # 已有实例在运行：只打开窗口连接它

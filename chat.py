@@ -525,15 +525,25 @@ def recognize_images(cfg: dict, ai: core.DeepSeek, images: list[str], question: 
     if not imgs:
         return ""
     content = [{"type": "text", "text": VISION_PROMPT.format(n=len(imgs), q=question or "（无）")}]
-    content += [{"type": "image_url", "image_url": {"url": u, "detail": "high"}} for u in imgs]
-    try:
-        msg = ai.chat([{"role": "user", "content": content}], max_tokens=6000,
-                      model=(cfg.get("vision_model") or "").strip() or None)
-    except RuntimeError as e:
-        if "image" in str(e).lower() or "400" in str(e):
-            raise RuntimeError(f"当前模型不支持图片识别：{e}。请在“设置”里把模型改为 deepseek-flash（或填写支持图片的“识图模型”）。")
-        raise
-    return (msg.get("content") or "").strip()
+    content += [{"type": "image_url", "image_url": {"url": u, "detail": "original"}} for u in imgs]
+    model = (cfg.get("vision_model") or "").strip() or None
+    text = ""
+    for attempt in (1, 2):
+        try:
+            # 识图不需要“思考模式”：开着时思考过程可能占满输出上限，导致识别结果为空
+            msg = ai.chat([{"role": "user", "content": content}], max_tokens=8000 * attempt, model=model, thinking=False)
+        except RuntimeError as e:
+            if "image" in str(e).lower() or "400" in str(e):
+                raise RuntimeError(f"当前模型不支持图片识别：{e}。请在“设置”里把模型改为 deepseek-flash（或在“识图模型”里填 deepseek-flash）。")
+            raise
+        text = (msg.get("content") or "").strip()
+        if text:
+            break
+        core.log.warning("图片识别第 %d 次返回空内容（思考内容 %d 字）", attempt, len(msg.get("reasoning_content") or ""))
+    if not text:
+        raise RuntimeError("DeepSeek 没有返回图片识别结果。请稍后重试；如果一直这样，请在“设置”里确认模型为 deepseek-flash，"
+                           "并检查图片是否清晰、是否为 JPG/PNG/GIF/WebP 格式。")
+    return text
 
 
 def ask(con, cfg: dict, ai: core.DeepSeek, file_ids, question: str, history=None, max_rounds: int = 10,
@@ -557,21 +567,28 @@ def ask(con, cfg: dict, ai: core.DeepSeek, file_ids, question: str, history=None
     msgs = [{"role": "system", "content": system}]
     for h in (history or [])[-12:]:
         if h.get("role") in ("user", "assistant") and str(h.get("content", "")).strip():
-            msgs.append({"role": h["role"], "content": str(h["content"])[:8000]})
+            m = {"role": h["role"], "content": str(h["content"])[:8000]}
+            if h["role"] == "assistant" and ai.thinking:
+                # 深度思考模式下带工具的多轮对话，必须回传之前每一轮的思考内容
+                m["reasoning_content"] = str(h.get("reasoning_content") or "")
+            msgs.append(m)
     msgs.append({"role": "user", "content": question})
+
+    last_reasoning = {"text": ""}
 
     def finish(answer: str) -> dict:
         return {"answer": answer or "（AI 没有返回内容）", "steps": steps, "full_data": full, "files": list(files),
-                "proposals": files.proposals, "user_content": question}
+                "proposals": files.proposals, "user_content": question, "reasoning": last_reasoning["text"]}
 
     for _ in range(max_rounds):
         msg = ai.chat(msgs, tools=TOOLS)
+        last_reasoning["text"] = msg.get("reasoning_content") or ""
         calls = msg.get("tool_calls") or []
         if not calls:
             return finish((msg.get("content") or "").strip())
         assistant = {"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls}
-        if msg.get("reasoning_content"):  # 思考模式下，同一轮工具调用需要回传思考内容
-            assistant["reasoning_content"] = msg["reasoning_content"]
+        if ai.thinking or msg.get("reasoning_content"):  # 思考模式下，同一轮工具调用需要回传思考内容
+            assistant["reasoning_content"] = msg.get("reasoning_content") or ""
         msgs.append(assistant)
         for call in calls:
             fn = call.get("function") or {}
@@ -587,4 +604,5 @@ def ask(con, cfg: dict, ai: core.DeepSeek, file_ids, question: str, history=None
 
     msgs.append({"role": "user", "content": "查询次数已达上限，请根据以上已经得到的结果直接给出最终回答，并说明还缺哪些信息。"})
     msg = ai.chat(msgs, tools=TOOLS, tool_choice="none")
+    last_reasoning["text"] = msg.get("reasoning_content") or ""
     return finish((msg.get("content") or "").strip())
